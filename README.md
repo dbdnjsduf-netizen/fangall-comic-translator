@@ -6,7 +6,7 @@ Codex 계정으로 로그인해 만화·일본만화 이미지의 글자를 인�
 
 ## 가장 빠른 실행 방법: Windows 휴대용 버전
 
-1. [Releases](https://github.com/dbdnjsduf-netizen/pangall-comic-translator/releases/latest)에서 이름에 `windows-x64`가 들어간 ZIP을 내려받습니다.
+1. [Releases](https://github.com/dbdnjsduf-netizen/fangal-comic-translator/releases/latest)에서 이름에 `windows-x64`가 들어간 ZIP을 내려받습니다.
 2. ZIP을 완전히 압축 해제합니다.
 3. `launch-comic-translator.cmd`를 더블클릭합니다.
 4. Codex 로그인이 없으면 브라우저 로그인 안내가 열립니다. 본인의 계정으로 로그인합니다.
