@@ -4,14 +4,23 @@ Codex 계정으로 로그인해 만화·일본만화 이미지의 글자를 인�
 
 > 이 프로젝트는 비공식 커뮤니티 도구이며 OpenAI의 공식 제품이 아닙니다. 프로그램은 개인 PC의 `127.0.0.1`에서만 실행됩니다. 각 사용자는 반드시 자신의 Codex/ChatGPT 계정을 사용해야 합니다.
 
-## 가장 빠른 실행 방법
+## 가장 빠른 실행 방법: Windows 휴대용 버전
+
+1. [Releases](https://github.com/dbdnjsduf-netizen/pangall-comic-translator/releases/latest)에서 이름에 `windows-x64`가 들어간 ZIP을 내려받습니다.
+2. ZIP을 완전히 압축 해제합니다.
+3. `launch-comic-translator.cmd`를 더블클릭합니다.
+4. Codex 로그인이 없으면 브라우저 로그인 안내가 열립니다. 본인의 계정으로 로그인합니다.
+5. 자동으로 열리는 `http://127.0.0.1:3344`에서 이미지를 올리고 번역을 시작합니다.
+
+휴대용 버전에는 Windows x64용 Node.js와 npm 패키지가 포함되어 있어 별도 설치가 필요 없습니다.
+
+## 소스 ZIP으로 실행
 
 1. 이 페이지 오른쪽 위의 **Code → Download ZIP**을 눌러 내려받고 압축을 풉니다.
-2. [Node.js LTS](https://nodejs.org/)가 없다면 먼저 설치합니다. Node.js 20 이상을 권장합니다.
+2. [Node.js LTS](https://nodejs.org/)를 설치합니다. Node.js 20 이상을 권장합니다.
 3. `launch-comic-translator.cmd`를 더블클릭합니다.
 4. 첫 실행에는 필요한 npm 패키지가 자동 설치됩니다.
-5. Codex 로그인이 없으면 브라우저 로그인 안내가 열립니다. 본인의 계정으로 로그인합니다.
-6. 자동으로 열리는 `http://127.0.0.1:3344`에서 이미지를 올리고 번역을 시작합니다.
+5. Codex 로그인 안내를 완료합니다.
 
 두 번째 실행부터는 같은 파일을 더블클릭하면 됩니다. 콘솔을 통해 실행하고 싶지 않다면 `launch-comic-translator.vbs`를 사용해도 됩니다.
 

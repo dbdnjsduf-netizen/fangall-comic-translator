@@ -7,6 +7,10 @@ cd /d "%~dp0"
 set "PORT=3344"
 set "URL=http://127.0.0.1:%PORT%"
 
+if exist "%~dp0runtime\node\node.exe" (
+  set "PATH=%~dp0runtime\node;%PATH%"
+)
+
 where node >nul 2>nul
 if errorlevel 1 goto no_node
 
