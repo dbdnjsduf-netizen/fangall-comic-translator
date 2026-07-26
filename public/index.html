@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>판갤 만화번역기</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="hero">
+        <p class="eyebrow">Sol Primary -> Sol Verification -> Image</p>
+        <h1>판갤 만화번역기</h1>
+        <p class="lede">
+          모든 만화 페이지를 Sol이 1차로 전체 판독·번역하고, 별도의 Sol 호출이 원본 전체를 독립적으로 다시 훑어 누락·병합·순서·번역 오류를 교정한 뒤 한국어 번역본을 생성합니다.
+        </p>
+      </section>
+
+      <section class="panel">
+        <div class="automatic-pipeline" aria-label="자동 모델 처리 방식">
+          <strong>자동 모델 처리</strong>
+          <span>1. Sol 높음 · 전체 페이지 읽기 순서 + OCR + 한국어 번역</span>
+          <span>2. Sol 높음 · 원본 전체 독립 재스캔 + 누락/병합/순서/번역 교정</span>
+          <span>3. Terra 중간 · 이미지 편집 요청</span>
+          <span>병렬 처리 · 페이지 분석 2개 + 이미지 생성 2개 · 전체 호출 최대 4개</span>
+          <small>모든 만화 페이지가 동일하게 Sol 이중검증을 거칩니다. 2차 Sol은 1차 목록에 묶이지 않아 누락된 글자를 새 항목으로 복구할 수 있습니다. 전체 처리는 최대 3단계이며 크롭 아틀라스나 말풍선별 추가 호출은 사용하지 않습니다.</small>
+        </div>
+        <div class="preset-row">
+          <label for="generationModeSelect">이미지 합성 방식</label>
+          <select id="generationModeSelect">
+            <option value="painted_mask" selected>직접 칠한 텍스트 영역만 생성</option>
+            <option value="protected_mask">칠한 영역을 GPT에서 숨기고 원본 복원</option>
+          </select>
+        </div>
+        <div class="preset-row">
+          <label for="presetSelect">프롬프트 설정</label>
+          <select id="presetSelect"></select>
+        </div>
+        <div class="preset-row">
+          <label for="concurrencySelect">이미지 생성 동시 처리 수</label>
+          <select id="concurrencySelect">
+            <option value="1">1개씩</option>
+            <option value="2" selected>2개씩 (권장)</option>
+            <option value="3">3개씩</option>
+          </select>
+        </div>
+        <div class="dictionary-panel">
+          <div class="dictionary-header">
+            <label for="dictionaryInput">사용자사전</label>
+            <button id="dictionaryResetBtn" type="button" class="ghost small">예시 복원</button>
+          </div>
+          <textarea id="dictionaryInput" rows="7" placeholder="예: Tico=티코&#10;Spider Jerusalem=스파이더 예루살렘&#10;Autumn Rainfall=아우텀 레인폴"></textarea>
+          <p class="dictionary-help">한 줄에 `원문=번역문` 형식으로 입력하세요. 저장은 브라우저에 유지됩니다.</p>
+        </div>
+        <div id="dropzone" class="dropzone" tabindex="0">
+          <input id="fileInput" type="file" accept="image/*" multiple hidden />
+          <p class="drop-title">이미지 여러 장을 드래그해서 올리거나 클릭해서 선택</p>
+          <p class="drop-sub">선택한 파일들을 순차적으로 번역하고 결과는 다운로드 폴더에 같은 이름으로 저장됩니다.</p>
+        </div>
+
+        <div class="mask-panel">
+          <div>
+            <strong id="maskPanelTitle">번역할 텍스트 영역</strong>
+            <p id="maskPanelDescription">말풍선 글자와 효과음처럼 GPT가 수정할 영역만 직접 칠합니다. 칠하지 않은 픽셀은 원본 그대로 유지됩니다.</p>
+          </div>
+          <button id="maskEditorBtn" type="button" class="ghost" disabled>텍스트 영역 편집</button>
+        </div>
+
+        <div class="actions">
+          <button id="loginBtn" class="ghost">Codex 로그인 안내</button>
+          <button id="cleanupBtn" class="ghost">찌꺼기 삭제</button>
+          <button id="historyClearBtn" class="ghost danger">번역 기록 지우기</button>
+          <button id="runBtn" class="primary" disabled>선택한 파일 일괄 실행</button>
+        </div>
+
+        <div id="status" class="status">대기 중</div>
+      </section>
+
+      <section class="grid">
+        <article class="card">
+          <h2>선택 파일</h2>
+          <div id="selectionList" class="selection-list"></div>
+        </article>
+
+        <article class="card">
+          <h2>현재 번역 상태</h2>
+          <div id="meta" class="meta"></div>
+          <div id="batchList" class="batch-list"></div>
+          <pre id="jsonView" class="json"></pre>
+        </article>
+      </section>
+    </main>
+
+    <div id="maskModal" class="modal" hidden>
+        <div class="modal-card">
+          <div class="modal-header">
+            <div>
+              <h2 id="maskModalTitle">텍스트 영역 편집</h2>
+              <p id="maskModalDescription">번역할 원문 글자와 필요한 주변 배경만 칠하세요. 칠한 영역 안에서만 이미지가 생성됩니다.</p>
+            </div>
+          <button id="maskCloseBtn" type="button" class="ghost small">닫기</button>
+        </div>
+        <div class="mask-toolbar">
+          <label for="maskFileSelect">파일</label>
+          <select id="maskFileSelect"></select>
+          <label for="maskBrushSize">브러시</label>
+          <input id="maskBrushSize" type="range" min="8" max="96" step="2" value="32" />
+          <input id="maskInvertCheckbox" type="checkbox" hidden />
+          <button id="maskUndoBtn" type="button" class="ghost small">마지막 칠 삭제</button>
+          <button id="maskClearBtn" type="button" class="ghost small">현재 파일 텍스트 영역 전체 삭제</button>
+        </div>
+        <div class="mask-canvas-wrap">
+          <canvas id="maskCanvas"></canvas>
+        </div>
+        <p id="maskHelp" class="dictionary-help"></p>
+      </div>
+    </div>
+
+    <div id="restoreModal" class="modal" hidden>
+      <div class="modal-card restore-modal-card">
+        <div class="modal-header">
+          <div>
+            <h2>생성본 복구 편집</h2>
+            <p>원본·생성본을 직접 복구하거나, 부자연스러운 이음새를 경계 보정 브러시로 표시해 주변 색으로 자동 연결합니다.</p>
+          </div>
+          <button id="restoreCloseBtn" type="button" class="ghost small">닫기</button>
+        </div>
+        <div class="mask-toolbar restore-toolbar">
+          <label for="restoreBrushSize">브러시</label>
+          <input id="restoreBrushSize" type="range" min="8" max="180" step="2" value="64" />
+          <div class="restore-mode" role="group" aria-label="브러시 모드">
+            <input id="restorePaintOriginal" name="restorePaintMode" type="radio" value="original" checked />
+            <label for="restorePaintOriginal">원본으로 복구</label>
+            <input id="restorePaintGenerated" name="restorePaintMode" type="radio" value="generated" />
+            <label for="restorePaintGenerated">자동복구 전 생성본</label>
+            <input id="restorePaintHeal" name="restorePaintMode" type="radio" value="heal" />
+            <label for="restorePaintHeal">경계 보정 브러시</label>
+          </div>
+          <label for="restoreViewMode">보기</label>
+          <select id="restoreViewMode">
+            <option value="edit">편집 결과</option>
+            <option value="base">현재 기준본</option>
+            <option value="original">전처리 원본</option>
+            <option value="generated">자동복구 전 생성본</option>
+          </select>
+          <button id="restoreUndoBtn" type="button" class="ghost small">마지막 칠 삭제</button>
+          <button id="restoreClearBtn" type="button" class="ghost small">현재 칠 전체 삭제</button>
+          <button id="restoreAdditionalRequestToggleBtn" type="button" class="ghost small">생성본 추가요청</button>
+          <button id="restoreSaveBtn" type="button" class="primary small">편집본 저장</button>
+        </div>
+        <div id="restoreAdditionalRequestPanel" class="restore-additional-request" hidden>
+          <label for="restoreAdditionalRequestInput">
+            <strong>생성본에 반영할 작은 추가요청</strong>
+            <span>번역 대상 글자의 색상·강조·크기·배치처럼, 이번 생성본에서 지킬 점을 짧게 적어 주세요.</span>
+          </label>
+          <textarea
+            id="restoreAdditionalRequestInput"
+            rows="3"
+            maxlength="1000"
+            placeholder="예: ‘MARRIAGE 루트’에서는 G와 ‘루트’만 원본처럼 빨간색으로 유지하고, 나머지 글자는 원본 색을 유지해 주세요."
+          ></textarea>
+          <div class="restore-additional-request-actions">
+            <span id="restoreAdditionalRequestCount">0 / 1000</span>
+            <button id="restoreAdditionalRequestCancelBtn" type="button" class="ghost small">취소</button>
+            <button id="restoreAdditionalRequestRunBtn" type="button" class="primary small">추가요청으로 재생성</button>
+          </div>
+        </div>
+        <div class="restore-canvas-wrap">
+          <canvas id="restoreCanvas"></canvas>
+        </div>
+        <p id="restoreHelp" class="dictionary-help"></p>
+      </div>
+    </div>
+
+    <div id="retryMaskModal" class="modal" hidden>
+      <div class="modal-card restore-modal-card">
+        <div class="modal-header">
+          <div>
+            <h2 id="retryMaskTitle">실패 항목 영역 편집</h2>
+            <p id="retryMaskDescription">저장된 전처리 원본 위에서 재실행에 사용할 영역을 수정합니다.</p>
+          </div>
+          <button id="retryMaskCloseBtn" type="button" class="ghost small">닫기</button>
+        </div>
+        <div class="mask-toolbar retry-mask-toolbar">
+          <label for="retryMaskBrushSize">브러시</label>
+          <input id="retryMaskBrushSize" type="range" min="8" max="180" step="2" value="48" />
+          <button id="retryMaskUndoBtn" type="button" class="ghost small">마지막 칠 삭제</button>
+          <button id="retryMaskClearBtn" type="button" class="ghost danger small">영역 전체 삭제</button>
+          <button id="retryMaskSaveBtn" type="button" class="primary small">영역 저장</button>
+        </div>
+        <div class="mask-canvas-wrap retry-mask-canvas-wrap">
+          <canvas id="retryMaskCanvas"></canvas>
+        </div>
+        <p id="retryMaskHelp" class="dictionary-help"></p>
+      </div>
+    </div>
+
+    <div id="translationModal" class="modal" hidden>
+      <div class="modal-card translation-modal-card">
+        <div class="modal-header">
+          <div>
+            <h2>번역 분석데이터 수정</h2>
+            <p>원문과 번역문, 글자 역할과 대략적인 위치를 직접 고친 뒤 저장하거나 곧바로 이미지를 다시 생성합니다.</p>
+          </div>
+          <button id="translationCloseBtn" type="button" class="ghost small">닫기</button>
+        </div>
+        <div class="translation-summary" id="translationSummary"></div>
+        <div id="translationEditorList" class="translation-editor-list"></div>
+        <div class="translation-footer">
+          <button id="translationAddBtn" type="button" class="ghost small">항목 추가</button>
+          <span class="translation-spacer"></span>
+          <button id="translationSaveBtn" type="button" class="ghost small">수정사항만 저장</button>
+          <button id="translationSaveRegenerateBtn" type="button" class="primary small">저장 후 이미지 재생성</button>
+        </div>
+        <p id="translationHelp" class="dictionary-help">수정사항만 저장하면 현재 생성본은 유지됩니다. 재생성을 눌러야 이미지에 반영됩니다.</p>
+      </div>
+    </div>
+
+    <script src="/app.js" type="module"></script>
+  </body>
+  </html>

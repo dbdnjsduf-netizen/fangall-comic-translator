@@ -1,0 +1,21 @@
+{
+  "name": "pangall-comic-translator",
+  "version": "1.0.0",
+  "description": "Codex 로그인으로 만화 이미지의 텍스트를 인식·번역하고 한국어 이미지로 저장하는 로컬 번역기",
+  "private": true,
+  "license": "AGPL-3.0-only",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node server.mjs"
+  },
+  "dependencies": {
+    "dotenv": "^17.4.2",
+    "express": "^5.1.0",
+    "multer": "^2.0.2",
+    "openai-oauth": "^1.0.2",
+    "sharp": "^0.34.4"
+  }
+}
