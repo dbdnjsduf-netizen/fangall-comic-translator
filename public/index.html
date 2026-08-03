@@ -3,14 +3,14 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>판갤 만화번역기</title>
+    <title>Comic Translator</title>
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
     <main class="shell">
       <section class="hero">
         <p class="eyebrow">Sol Primary -> Sol Verification -> Image</p>
-        <h1>판갤 만화번역기</h1>
+        <h1>만화 이미지 자동 번역기</h1>
         <p class="lede">
           모든 만화 페이지를 Sol이 1차로 전체 판독·번역하고, 별도의 Sol 호출이 원본 전체를 독립적으로 다시 훑어 누락·병합·순서·번역 오류를 교정한 뒤 한국어 번역본을 생성합니다.
         </p>
@@ -19,10 +19,10 @@
       <section class="update-log" aria-labelledby="updateLogTitle">
         <h2 id="updateLogTitle">업데이트 로그 · 2026-08-03</h2>
         <ul>
+          <li>GitHub 배포본을 현재 로컬 개선판의 서버·UI·실행기·의존성 기준으로 전면 동기화했습니다.</li>
+          <li>OAuth 실행 안정화와 서버 과부하·스트림 실패 감지, 모델 재시도 정책을 강화했습니다.</li>
           <li>양면 페이지가 원본 2K 범위를 초과할 때 자동으로 4K급 해상도로 생성합니다.</li>
-          <li>번역 목록의 개별 이미지에 <strong>좌우 분할</strong> 버튼을 추가했습니다.</li>
-          <li>분할한 좌·우 페이지를 각각 독립적으로 분석·번역·생성한 뒤 원래 순서로 자동 합성합니다.</li>
-          <li>직접 칠한 텍스트 영역과 보호영역 좌표도 각 분할 페이지에 맞게 자동 변환합니다.</li>
+          <li>번역 목록에서 좌우 분할을 선택하면 양쪽을 독립 분석·번역·생성한 뒤 자동 합성합니다.</li>
         </ul>
       </section>
 

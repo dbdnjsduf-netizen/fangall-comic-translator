@@ -37,7 +37,7 @@ const AUTOMATIC_MODEL_ALLOWLIST = [...new Set(
   Object.values(AUTOMATIC_MODEL_PIPELINE).map((stage) => stage.model),
 )];
 const OAUTH_MODEL_ALLOWLIST = process.env.OAUTH_MODEL_ALLOWLIST || AUTOMATIC_MODEL_ALLOWLIST.join(",");
-const OAUTH_CODEX_VERSION = process.env.OAUTH_CODEX_VERSION || "0.111.0";
+const OAUTH_CODEX_VERSION = String(process.env.OAUTH_CODEX_VERSION || "").trim();
 const VALID_IMAGE_GENERATION_QUALITIES = new Set(["low", "medium", "high", "auto"]);
 const VALID_REASONING_EFFORTS = new Set(["none", "low", "medium", "high", "xhigh", "max"]);
 const IMAGE_GENERATION_CONCURRENCY = Math.max(
@@ -52,7 +52,14 @@ const MODEL_CONCURRENCY_LIMIT = Math.max(
   2,
   Math.min(6, Number(process.env.MODEL_CONCURRENCY_LIMIT || 4)),
 );
-const MODEL_RETRY_BASE_MS = Math.max(250, Number(process.env.MODEL_RETRY_BASE_MS || 1000));
+const configuredModelStageMaxRetries = Number(process.env.MODEL_STAGE_MAX_RETRIES);
+const MODEL_STAGE_MAX_RETRIES = Number.isFinite(configuredModelStageMaxRetries)
+  ? Math.max(0, Math.min(6, Math.floor(configuredModelStageMaxRetries)))
+  : 4;
+const configuredModelRetryBaseMs = Number(process.env.MODEL_RETRY_BASE_MS);
+const MODEL_RETRY_BASE_MS = Number.isFinite(configuredModelRetryBaseMs)
+  ? Math.max(250, Math.round(configuredModelRetryBaseMs))
+  : 2000;
 let activeModelRequestCount = 0;
 const modelRequestWaiters = [];
 const IMAGE_GENERATION_QUALITY = VALID_IMAGE_GENERATION_QUALITIES.has(process.env.IMAGE_GENERATION_QUALITY)
@@ -561,17 +568,23 @@ app.use("/output", express.static(OUTPUT_DIR));
 let shuttingDown = false;
 
 function spawnOAuthProxy() {
-  const child = spawn("npx", [
-    "openai-oauth",
+  const oauthCliPath = join(__dirname, "node_modules", "openai-oauth", "dist", "cli.js");
+  if (!existsSync(oauthCliPath)) {
+    throw new Error(`openai-oauth CLI is missing at ${oauthCliPath}. Run npm install before starting the translator.`);
+  }
+  const oauthArgs = [
+    oauthCliPath,
     "--port",
     String(OAUTH_PORT),
-    "--codex-version",
-    OAUTH_CODEX_VERSION,
     "--models",
     OAUTH_MODEL_ALLOWLIST,
-  ], {
+  ];
+  if (OAUTH_CODEX_VERSION) {
+    oauthArgs.push("--codex-version", OAUTH_CODEX_VERSION);
+  }
+  const child = spawn(process.execPath, oauthArgs, {
     cwd: __dirname,
-    shell: true,
+    shell: false,
     stdio: ["ignore", "pipe", "pipe"],
     env: { ...process.env },
   });
@@ -585,7 +598,12 @@ function spawnOAuthProxy() {
 
   child.stderr.on("data", (chunk) => {
     const text = chunk.toString().trim();
-    if (text && !text.includes("npm warn")) console.error(`[oauth] ${text}`);
+    const isIntentionalPatchUpdateNotice =
+      text.includes("A newer version of openai-oauth is available")
+      || text.includes("npx openai-oauth@latest");
+    if (text && !text.includes("npm warn") && !isIntentionalPatchUpdateNotice) {
+      console.error(`[oauth] ${text}`);
+    }
   });
 
   child.on("exit", (code) => {
@@ -648,6 +666,8 @@ function normalizeSize(width, height, targetLongSide = SINGLE_PAGE_LONG_SIDE) {
     targetHeight = Math.max(16, Math.round((targetHeight * ratio) / 16) * 16);
   }
 
+  // 4K spreads may use the model's full pixel budget (3840x2160 fits exactly).
+  // Keep the older conservative ceiling for ordinary 2K pages.
   const safeMaxPixels = targetLongSide > SINGLE_PAGE_LONG_SIDE
     ? IMAGE_GENERATION_MAX_PIXELS
     : 7600000;
@@ -2272,7 +2292,39 @@ function isTransientModelError(error) {
   const message = String(error?.message || "");
   return error?.status === 429
     || (typeof error?.status === "number" && error.status >= 500)
-    || /An error occurred while processing your request|request id|temporarily unavailable|rate limit|timeout|terminated|abort|aborted|fetch failed|ECONNRESET|ETIMEDOUT|socket hang up/i.test(message);
+    || /An error occurred while processing your request|request id|temporarily unavailable|servers? (?:are )?(?:currently )?overloaded|overloaded|try again later|service unavailable|server_error|rate limit|timeout|terminated|abort|aborted|fetch failed|ECONNRESET|ETIMEDOUT|socket hang up/i.test(message);
+}
+
+function createOAuthStreamError(parsed, fallbackMessage) {
+  const responseError = parsed?.error || parsed?.response?.error || {};
+  const message = responseError?.message
+    || responseError?.code
+    || parsed?.message
+    || fallbackMessage;
+  const error = new Error(message);
+  const numericStatus = Number(
+    responseError?.status
+      ?? responseError?.status_code
+      ?? parsed?.status
+      ?? parsed?.status_code,
+  );
+  if (Number.isFinite(numericStatus) && numericStatus >= 400) {
+    error.status = numericStatus;
+  } else if (/overloaded|try again later|service unavailable|server_error/i.test(message)) {
+    error.status = 503;
+  }
+  error.code = responseError?.code || parsed?.code || null;
+  error.requestId = responseError?.request_id
+    || parsed?.request_id
+    || parsed?.response?.id
+    || null;
+  try {
+    error.body = JSON.stringify({
+      type: parsed?.type || null,
+      error: responseError,
+    });
+  } catch {}
+  return error;
 }
 
 function generationErrorDetails(error) {
@@ -2488,9 +2540,8 @@ async function runStructuredResponse({
   schema,
   emptyError,
 }) {
-  const MAX_STAGE_RETRIES = 2;
   let lastError = null;
-  for (let attempt = 0; attempt <= MAX_STAGE_RETRIES; attempt++) {
+  for (let attempt = 0; attempt <= MODEL_STAGE_MAX_RETRIES; attempt++) {
     let releaseModelPermit = null;
     try {
       releaseModelPermit = await acquireModelRequestPermit(`${model}:${schemaName}`);
@@ -2527,9 +2578,9 @@ async function runStructuredResponse({
       releaseModelPermit?.();
       releaseModelPermit = null;
       lastError = error;
-      if (!isTransientModelError(error) || attempt === MAX_STAGE_RETRIES) break;
+      if (!isTransientModelError(error) || attempt === MODEL_STAGE_MAX_RETRIES) break;
       const waitMs = modelRetryDelayMs(error, attempt);
-      console.warn(`[stage-retry] model=${model} schema=${schemaName} attempt=${attempt + 1}/${MAX_STAGE_RETRIES} waitMs=${waitMs}`);
+      console.warn(`[stage-retry] model=${model} schema=${schemaName} retry=${attempt + 1}/${MODEL_STAGE_MAX_RETRIES} waitMs=${waitMs}`);
       await delay(waitMs);
     } finally {
       releaseModelPermit?.();
@@ -2851,9 +2902,8 @@ async function runOcrTranslation(imageDataUrl, preset, dictionaryLines = [], mod
     : "";
   const openAiModel = normalizeOpenAiOcrModel(model);
   const reasoningEffort = reasoningEffortForModel(openAiModel, AUTOMATIC_MODEL_PIPELINE.comicPrimaryOcr.reasoningEffort);
-  const MAX_STAGE_RETRIES = 2;
   let lastError = null;
-  for (let attempt = 0; attempt <= MAX_STAGE_RETRIES; attempt++) {
+  for (let attempt = 0; attempt <= MODEL_STAGE_MAX_RETRIES; attempt++) {
     let releaseModelPermit = null;
     try {
       releaseModelPermit = await acquireModelRequestPermit(`${openAiModel}:${preset.schemaName}`);
@@ -2922,8 +2972,8 @@ async function runOcrTranslation(imageDataUrl, preset, dictionaryLines = [], mod
           if (parsed.type === "response.output_text.done" && parsed.text) {
             textBlock = parsed.text;
           }
-          if (parsed.type === "error") {
-            throw new Error(parsed.error?.message || "OCR translation failed.");
+          if (parsed.type === "error" || parsed.type === "response.failed" || parsed.response?.status === "failed") {
+            throw createOAuthStreamError(parsed, "OCR translation failed.");
           }
         }
       }
@@ -2934,9 +2984,9 @@ async function runOcrTranslation(imageDataUrl, preset, dictionaryLines = [], mod
       releaseModelPermit?.();
       releaseModelPermit = null;
       lastError = error;
-      if (!isTransientModelError(error) || attempt === MAX_STAGE_RETRIES) break;
+      if (!isTransientModelError(error) || attempt === MODEL_STAGE_MAX_RETRIES) break;
       const waitMs = modelRetryDelayMs(error, attempt);
-      console.warn(`[stage-retry] model=${openAiModel} schema=${preset.schemaName} attempt=${attempt + 1}/${MAX_STAGE_RETRIES} waitMs=${waitMs}`);
+      console.warn(`[stage-retry] model=${openAiModel} schema=${preset.schemaName} retry=${attempt + 1}/${MODEL_STAGE_MAX_RETRIES} waitMs=${waitMs}`);
       await delay(waitMs);
     } finally {
       releaseModelPermit?.();
@@ -3069,9 +3119,8 @@ async function readImageGenerationStream(response) {
         if (parsed.type === "response.completed") {
           usage = parsed.response?.usage || null;
         }
-        if (parsed.type === "error") {
-          const error = parsed.error || {};
-          throw new Error(error.message || error.code || "Image generation stream returned an error.");
+        if (parsed.type === "error" || parsed.type === "response.failed" || parsed.response?.status === "failed") {
+          throw createOAuthStreamError(parsed, "Image generation stream returned an error.");
         }
       } catch (error) {
         if (!String(error?.message || "").startsWith("Unexpected")) throw error;
@@ -3180,7 +3229,6 @@ async function runImageTranslation(
   const mangaWritingDirectionInstruction = preset.id === "manga_jp"
     ? " Japanese manga mode: the Latin-text lock overrides the general Korean completion rule. Preserve every existing Latin/English glyph exactly as source artwork; never erase, redraw, translate, Hangul-transliterate, move, restyle, or duplicate it. Pure-Latin occurrences are not generation targets. In mixed Latin/Japanese occurrences, edit only the Japanese glyphs and leave the existing Latin glyph pixels untouched. Render ordinary Korean text horizontally left-to-right even when its paired source was vertical Japanese; only true sound effects or artistic logos may retain decorative orientation. Match each occurrence by its visible source text, reading order, role, and coarse location hint; the existing container supplies the safe horizontal typesetting area. Never use horizontal recomposition to move, merge, or swap items. Preserve the complete Korean replacement, balance line breaks, then reduce font size as needed without touching borders, tails, panel lines, or artwork."
     : "";
-  const MAX_STAGE_RETRIES = 2;
   const reasoningEffort = reasoningEffortForModel(imageGenerationModel, AUTOMATIC_MODEL_PIPELINE.imageGeneration.reasoningEffort);
   const activeTranslationData = translationData;
   const paintedPrompts = paintedInputOnly
@@ -3189,7 +3237,7 @@ async function runImageTranslation(
   let activeEditMaskDataUrl = editMaskDataUrl;
   let useHighFidelityEditControls = paintedInputOnly || generationMode === "page";
   let lastError = null;
-  for (let attempt = 0; attempt <= MAX_STAGE_RETRIES; attempt++) {
+  for (let attempt = 0; attempt <= MODEL_STAGE_MAX_RETRIES; attempt++) {
     let releaseModelPermit = null;
     try {
       releaseModelPermit = await acquireModelRequestPermit(`${imageGenerationModel}:image-generation`);
@@ -3304,9 +3352,9 @@ async function runImageTranslation(
         console.warn("[image-generation] image edit mask unsupported by current OAuth route; retrying with redacted painted input and local painted-region compositing");
         continue;
       }
-      if (isNonRetryableGenerationError(error) || !isTransientModelError(error) || attempt === MAX_STAGE_RETRIES) break;
+      if (isNonRetryableGenerationError(error) || !isTransientModelError(error) || attempt === MODEL_STAGE_MAX_RETRIES) break;
       const waitMs = modelRetryDelayMs(error, attempt, 1250);
-      console.warn(`[stage-retry] model=${imageGenerationModel} schema=image-generation attempt=${attempt + 1}/${MAX_STAGE_RETRIES} waitMs=${waitMs}`);
+      console.warn(`[stage-retry] model=${imageGenerationModel} schema=image-generation retry=${attempt + 1}/${MODEL_STAGE_MAX_RETRIES} waitMs=${waitMs}`);
       await delay(waitMs);
     } finally {
       releaseModelPermit?.();
@@ -3401,7 +3449,9 @@ async function readStreamedOutputText(response, errorMessage) {
       if (!payload || payload === "[DONE]") continue;
       const parsed = JSON.parse(payload);
       if (parsed.type === "response.output_text.done" && parsed.text) textBlock = parsed.text;
-      if (parsed.type === "error") throw new Error(parsed.error?.message || errorMessage);
+      if (parsed.type === "error" || parsed.type === "response.failed" || parsed.response?.status === "failed") {
+        throw createOAuthStreamError(parsed, errorMessage);
+      }
     }
   }
   if (!textBlock) throw new Error(errorMessage);
@@ -3657,10 +3707,9 @@ async function runPatchAtlasImageTranslation(
   metadata,
   imageGenerationModel,
 ) {
-  const MAX_STAGE_RETRIES = 2;
   let lastError = null;
   let maskSupported = true;
-  for (let attempt = 0; attempt <= MAX_STAGE_RETRIES; attempt++) {
+  for (let attempt = 0; attempt <= MODEL_STAGE_MAX_RETRIES; attempt++) {
     try {
       console.log(
         `[patch-atlas-generation] model=${imageGenerationModel} tiles=${metadata.tiles.length} size=${PATCH_ATLAS_SIZE} mask=${maskSupported ? "on" : "off"} quality=${IMAGE_GENERATION_QUALITY} moderation=${IMAGE_GENERATION_MODERATION}`,
@@ -3681,8 +3730,10 @@ async function runPatchAtlasImageTranslation(
         console.warn("[patch-atlas-generation] image mask unsupported by current OAuth route; retrying with local hard-mask compositing only");
         continue;
       }
-      if (isNonRetryableGenerationError(error) || !isTransientModelError(error) || attempt === MAX_STAGE_RETRIES) break;
-      await delay(1250 * (attempt + 1));
+      if (isNonRetryableGenerationError(error) || !isTransientModelError(error) || attempt === MODEL_STAGE_MAX_RETRIES) break;
+      const waitMs = modelRetryDelayMs(error, attempt, 1250);
+      console.warn(`[stage-retry] model=${imageGenerationModel} schema=patch-atlas-generation retry=${attempt + 1}/${MODEL_STAGE_MAX_RETRIES} waitMs=${waitMs}`);
+      await delay(waitMs);
     }
   }
   throw lastError || new Error("Patch Atlas image generation failed.");
@@ -3960,7 +4011,12 @@ function protectionSpecForSplitHalf(protection, side) {
     const left = Math.max(start, Number(region.x) || 0);
     const right = Math.min(end, (Number(region.x) || 0) + (Number(region.width) || 0));
     if (right <= left) return null;
-    return { x: (left - start) * 2, y: region.y, width: (right - left) * 2, height: region.height };
+    return {
+      x: (left - start) * 2,
+      y: region.y,
+      width: (right - left) * 2,
+      height: region.height,
+    };
   }).filter(Boolean);
   const strokes = spec.strokes.map((stroke) => {
     const points = (stroke.points || [])
@@ -3994,8 +4050,16 @@ async function expandSplitPageUploads(uploadedFiles, protectionMasks, splitFlags
       sharp(file.buffer).extract({ left: 0, top: 0, width: leftWidth, height: meta.height }).toBuffer(),
       sharp(file.buffer).extract({ left: leftWidth, top: 0, width: rightWidth, height: meta.height }).toBuffer(),
     ]);
-    expanded.push({ file: { ...file, buffer: leftBuffer, originalname: `${stem}.__split_left${extension}` }, protectionRegions: protectionSpecForSplitHalf(protectionMasks[index], "left"), split: { ...common, side: "left", hidden: false } });
-    expanded.push({ file: { ...file, buffer: rightBuffer, originalname: `${stem}.__split_right${extension}` }, protectionRegions: protectionSpecForSplitHalf(protectionMasks[index], "right"), split: { ...common, side: "right", hidden: true } });
+    expanded.push({
+      file: { ...file, buffer: leftBuffer, originalname: `${stem}.__split_left${extension}` },
+      protectionRegions: protectionSpecForSplitHalf(protectionMasks[index], "left"),
+      split: { ...common, side: "left", hidden: false },
+    });
+    expanded.push({
+      file: { ...file, buffer: rightBuffer, originalname: `${stem}.__split_right${extension}` },
+      protectionRegions: protectionSpecForSplitHalf(protectionMasks[index], "right"),
+      split: { ...common, side: "right", hidden: true },
+    });
   }
   return expanded;
 }
@@ -4081,12 +4145,6 @@ function makeBatchSnapshot(batch) {
       retryCount: item.retryCount || 0,
       retryStartedAt: item.retryStartedAt || null,
       retryCompletedAt: item.retryCompletedAt || null,
-      splitGroupId: item.splitGroupId || null,
-      splitSide: item.splitSide || null,
-      splitHidden: item.splitHidden === true,
-      splitOriginalName: item.splitOriginalName || null,
-      splitSourceWidth: item.splitSourceWidth || null,
-      splitSourceHeight: item.splitSourceHeight || null,
     })),
   };
 }
@@ -4235,7 +4293,10 @@ async function finalizeSplitPageOutputs(batch) {
       continue;
     }
     updateItemPhase(batch, left, "running", "좌우 결과 합성 중", 97);
-    const [leftMeta, rightMeta] = await Promise.all([sharp(left.outputPath).metadata(), sharp(right.outputPath).metadata()]);
+    const [leftMeta, rightMeta] = await Promise.all([
+      sharp(left.outputPath).metadata(),
+      sharp(right.outputPath).metadata(),
+    ]);
     const targetHeight = Math.max(leftMeta.height || 1, rightMeta.height || 1);
     const leftWidth = Math.round((leftMeta.width || 1) * targetHeight / (leftMeta.height || 1));
     const rightWidth = Math.round((rightMeta.width || 1) * targetHeight / (rightMeta.height || 1));
@@ -4243,8 +4304,12 @@ async function finalizeSplitPageOutputs(batch) {
       sharp(left.outputPath).resize(leftWidth, targetHeight, { fit: "fill" }).png().toBuffer(),
       sharp(right.outputPath).resize(rightWidth, targetHeight, { fit: "fill" }).png().toBuffer(),
     ]);
-    const merged = await sharp({ create: { width: leftWidth + rightWidth, height: targetHeight, channels: 3, background: "#ffffff" } })
-      .composite([{ input: leftBuffer, left: 0, top: 0 }, { input: rightBuffer, left: leftWidth, top: 0 }]).png().toBuffer();
+    const merged = await sharp({
+      create: { width: leftWidth + rightWidth, height: targetHeight, channels: 3, background: "#ffffff" },
+    }).composite([
+      { input: leftBuffer, left: 0, top: 0 },
+      { input: rightBuffer, left: leftWidth, top: 0 },
+    ]).png().toBuffer();
     const outputName = resolveFinalOutputName(left.splitOriginalName || left.originalName);
     const outputExt = extname(outputName).toLowerCase();
     let outputPipeline = sharp(merged).toColourspace("srgb").flatten({ background: "#ffffff" });
@@ -4256,7 +4321,14 @@ async function finalizeSplitPageOutputs(batch) {
     left.outputPath = downloadPath;
     left.previewUrl = `/output/${encodeURIComponent(outputName)}`;
     left.manualEditBasePath = downloadPath;
-    left.targetSize = { width: leftWidth + rightWidth, height: targetHeight, finalWidth: leftWidth + rightWidth, finalHeight: targetHeight, size: `${leftWidth + rightWidth}x${targetHeight}`, resolutionTier: "split-merged" };
+    left.targetSize = {
+      width: leftWidth + rightWidth,
+      height: targetHeight,
+      finalWidth: leftWidth + rightWidth,
+      finalHeight: targetHeight,
+      size: `${leftWidth + rightWidth}x${targetHeight}`,
+      resolutionTier: "split-merged",
+    };
     left.error = null;
     updateItemPhase(batch, left, "completed", "좌우 분할 번역·합성 완료", 100);
     console.log(`[split-page] merged group=${groupId} left=${leftWidth}x${targetHeight} right=${rightWidth}x${targetHeight} output=${downloadPath}`);
@@ -5480,13 +5552,14 @@ process.on("SIGTERM", () => {
   process.exit(0);
 });
 
-app.listen(PORT, "127.0.0.1", () => {
+app.listen(PORT, () => {
   console.log(`Comic translator running at http://127.0.0.1:${PORT}`);
   console.log(`OAuth login helper: ${activeOauthUrl}`);
   console.log(`Comic OCR/render contract: ${COMIC_RENDER_CONTRACT_VERSION} (ordered source/replacement checklist + coarse 3x3 page zones + exact speech-bubble tail presence/absence lock; no numeric coordinates sent to models)`);
   console.log(`Automatic comic pipeline: primary=${AUTOMATIC_MODEL_PIPELINE.comicPrimaryOcr.model}/${AUTOMATIC_MODEL_PIPELINE.comicPrimaryOcr.reasoningEffort} verification=${AUTOMATIC_MODEL_PIPELINE.comicVerification.model}/${AUTOMATIC_MODEL_PIPELINE.comicVerification.reasoningEffort} image=${AUTOMATIC_MODEL_PIPELINE.imageGeneration.model}/${AUTOMATIC_MODEL_PIPELINE.imageGeneration.reasoningEffort}`);
   console.log(`Automatic document OCR: primary=${AUTOMATIC_MODEL_PIPELINE.documentOcr.model}/${AUTOMATIC_MODEL_PIPELINE.documentOcr.reasoningEffort} exception=${AUTOMATIC_MODEL_PIPELINE.documentException.model}/${AUTOMATIC_MODEL_PIPELINE.documentException.reasoningEffort}`);
-  console.log(`Concurrency defaults: analysis=${ANALYSIS_CONCURRENCY} imageGeneration=${IMAGE_GENERATION_CONCURRENCY} globalModelLimit=${MODEL_CONCURRENCY_LIMIT} fixedOcrThrottle=off adaptiveBackoff=on`);
+  console.log(`OAuth runtime: openai-oauth=local CodexClientVersion=${OAUTH_CODEX_VERSION || "automatic"}`);
+  console.log(`Concurrency defaults: analysis=${ANALYSIS_CONCURRENCY} imageGeneration=${IMAGE_GENERATION_CONCURRENCY} globalModelLimit=${MODEL_CONCURRENCY_LIMIT} fixedOcrThrottle=off adaptiveBackoff=on stageRetries=${MODEL_STAGE_MAX_RETRIES} retryBaseMs=${MODEL_RETRY_BASE_MS}`);
   console.log(`Image generation defaults: model=${normalizeImageGenerationModel(DEFAULT_IMAGE_GENERATION_MODEL)} quality=${IMAGE_GENERATION_QUALITY} moderation=${IMAGE_GENERATION_MODERATION} reasoning=${AUTOMATIC_MODEL_PIPELINE.imageGeneration.reasoningEffort} timeoutMs=${IMAGE_GENERATION_TIMEOUT_MS} aspectMismatch=continue`);
   console.log("Source-image fidelity lock: enabled for comic, manga_jp, document, and cardgame presets; non-text color and geometry changes forbidden");
   console.log(`Image edit controls: generationMode=painted_mask -> ${PAINTED_TEXT_EDIT_CONTRACT_VERSION}; generationMode=painted_mask|page -> action=edit + input_fidelity=high (automatic fallback enabled); protected_mask -> standard controls`);

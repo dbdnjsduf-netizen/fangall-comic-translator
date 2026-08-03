@@ -1,6 +1,6 @@
 Option Explicit
 
-Dim shell, fso, baseDir, shutdownCmd, killOauthCmd, launcher
+Dim shell, fso, baseDir, shutdownCmd, killOauthCmd
 Set shell = CreateObject("WScript.Shell")
 Set fso = CreateObject("Scripting.FileSystemObject")
 
@@ -12,5 +12,4 @@ shell.CurrentDirectory = baseDir
 shell.Run shutdownCmd, 0, True
 shell.Run killOauthCmd, 0, True
 WScript.Sleep 1500
-launcher = fso.BuildPath(baseDir, "launch-comic-translator.cmd")
-shell.Run Chr(34) & launcher & Chr(34), 1, False
+shell.Run Chr(34) & fso.BuildPath(baseDir, "launch-comic-translator.vbs") & Chr(34), 0, False
