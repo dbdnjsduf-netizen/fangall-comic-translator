@@ -282,6 +282,34 @@ button:disabled {
   margin-bottom: 4px;
 }
 
+.split-page-btn {
+  margin-top: 9px;
+  padding: 7px 11px;
+  border: 1px solid #9d8c70;
+  border-radius: 8px;
+  background: #f7f1e6;
+  color: #493d2f;
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.split-page-btn.active {
+  border-color: #346b4b;
+  background: #dcefe2;
+  color: #19482d;
+}
+
+.update-log {
+  margin-top: 18px;
+  padding: 16px 18px;
+  border: 2px solid #ccbfa7;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.82);
+}
+
+.update-log h2 { margin: 0 0 8px; }
+.update-log ul { margin: 0; padding-left: 20px; line-height: 1.7; }
+
 .batch-progress {
   height: 10px;
   background: #ece3d4;
