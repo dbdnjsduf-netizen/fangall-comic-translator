@@ -68,6 +68,7 @@ const translationHelp = document.getElementById("translationHelp");
 
 let selectedFiles = [];
 let protectionMasks = [];
+let splitPageFlags = [];
 let oauthUrl = "http://127.0.0.1:10531";
 let activeBatchId = null;
 let pollTimer = null;
@@ -226,7 +227,8 @@ function renderSelectedFiles() {
       (file, index) => {
         const maskEntry = getMaskEntry(index);
         const maskCount = getMaskShapeCount(maskEntry);
-        return `<div class="selection-item"><strong>${index + 1}. ${file.name}</strong><span>${(file.size / 1024 / 1024).toFixed(2)} MB · ${getMaskUiCopy().regionLabel} ${maskCount}개</span></div>`;
+        const splitEnabled = splitPageFlags[index] === true;
+        return `<div class="selection-item"><strong>${index + 1}. ${file.name}</strong><span>${(file.size / 1024 / 1024).toFixed(2)} MB · ${getMaskUiCopy().regionLabel} ${maskCount}개</span><button type="button" class="split-page-btn${splitEnabled ? " active" : ""}" data-split-index="${index}" aria-pressed="${splitEnabled}">${splitEnabled ? "좌우 분할 켜짐" : "좌우 분할"}</button></div>`;
       }
     )
     .join("");
@@ -243,6 +245,15 @@ function renderSelectedFiles() {
     `<strong>${getMaskUiCopy().summaryLabel}:</strong> ${protectionMasks.reduce((sum, entry, index) => sum + getMaskShapeCount(getMaskEntry(index)), 0)}개<br />` +
     `<strong>사용자사전 항목:</strong> ${parseDictionary(dictionaryInput.value).length}개`;
 }
+
+selectionList.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-split-index]");
+  if (!button) return;
+  const index = Number(button.dataset.splitIndex);
+  if (!Number.isInteger(index) || index < 0 || index >= selectedFiles.length) return;
+  splitPageFlags[index] = splitPageFlags[index] !== true;
+  renderSelectedFiles();
+});
 
 function renderPresets() {
   presetSelect.innerHTML = presets
@@ -448,6 +459,7 @@ async function loadRecentBatch() {
 function setFiles(fileList) {
   selectedFiles = Array.from(fileList);
   protectionMasks = selectedFiles.map(() => createMaskEntry());
+  splitPageFlags = selectedFiles.map(() => false);
   runBtn.disabled = selectedFiles.length === 0;
   maskEditorBtn.disabled = selectedFiles.length === 0;
   activeBatchId = null;
@@ -1660,6 +1672,7 @@ runBtn.addEventListener("click", async () => {
     formData.append("concurrency", concurrencySelect.value || "2");
     formData.append("dictionary", dictionaryInput.value || "");
     formData.append("generationMode", generationModeSelect.value || "painted_mask");
+    formData.append("splitPageFlags", JSON.stringify(splitPageFlags));
     formData.append(
       "protectionMasks",
       JSON.stringify(protectionMasks.map((entry, index) => {

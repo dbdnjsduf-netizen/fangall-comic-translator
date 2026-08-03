@@ -622,9 +622,17 @@ async function clearDirectory(dirPath) {
   }
 }
 
-function normalizeSize(width, height) {
+const SINGLE_PAGE_LONG_SIDE = 2048;
+const SPREAD_PAGE_LONG_SIDE = 3840;
+const IMAGE_GENERATION_MAX_PIXELS = 8294400;
+const SPREAD_MIN_ASPECT_RATIO = 1.1;
+
+function isDoublePageSpread(width, height) {
+  return width / height >= SPREAD_MIN_ASPECT_RATIO;
+}
+
+function normalizeSize(width, height, targetLongSide = SINGLE_PAGE_LONG_SIDE) {
   const longSide = Math.max(width, height);
-  const targetLongSide = 2048;
   const scale = targetLongSide / longSide;
   let targetWidth = Math.round(width * scale);
   let targetHeight = Math.round(height * scale);
@@ -633,28 +641,40 @@ function normalizeSize(width, height) {
   targetHeight = Math.max(16, Math.round(targetHeight / 16) * 16);
 
   const pixels = targetWidth * targetHeight;
-  const maxPixels = 8294400;
+  const maxPixels = IMAGE_GENERATION_MAX_PIXELS;
   if (pixels > maxPixels) {
     const ratio = Math.sqrt(maxPixels / pixels);
     targetWidth = Math.max(16, Math.round((targetWidth * ratio) / 16) * 16);
     targetHeight = Math.max(16, Math.round((targetHeight * ratio) / 16) * 16);
   }
 
-  const safeMaxPixels = 7600000;
+  const safeMaxPixels = targetLongSide > SINGLE_PAGE_LONG_SIDE
+    ? IMAGE_GENERATION_MAX_PIXELS
+    : 7600000;
   if (targetWidth * targetHeight > safeMaxPixels) {
     const ratio = Math.sqrt(safeMaxPixels / (targetWidth * targetHeight));
-    targetWidth = Math.max(16, Math.round((targetWidth * ratio) / 16) * 16);
-    targetHeight = Math.max(16, Math.round((targetHeight * ratio) / 16) * 16);
+    targetWidth = Math.max(16, Math.floor((targetWidth * ratio) / 16) * 16);
+    targetHeight = Math.max(16, Math.floor((targetHeight * ratio) / 16) * 16);
   }
 
   return { width: targetWidth, height: targetHeight, size: `${targetWidth}x${targetHeight}` };
 }
 
 function normalize2kPresetSize(width, height) {
-  const target = normalizeSize(width, height);
+  const detectedDoublePageSpread = isDoublePageSpread(width, height);
+  const use4kSpreadGeneration = detectedDoublePageSpread
+    && Math.max(width, height) > SINGLE_PAGE_LONG_SIDE;
+  const target = normalizeSize(
+    width,
+    height,
+    use4kSpreadGeneration ? SPREAD_PAGE_LONG_SIDE : SINGLE_PAGE_LONG_SIDE,
+  );
 
   return {
     ...target,
+    resolutionTier: use4kSpreadGeneration ? "4k-spread" : "2k",
+    doublePageSpread: detectedDoublePageSpread,
+    use4kSpreadGeneration,
     originalWidth: width,
     originalHeight: height,
     finalWidth: target.width,
@@ -3923,6 +3943,63 @@ async function normalizeUploadedFiles(files) {
   return Promise.all(imageFiles.map((file, index) => normalizeUploadedFile(file, index)));
 }
 
+function parseSplitPageFlags(rawValue, fileCount) {
+  try {
+    const parsed = JSON.parse(typeof rawValue === "string" ? rawValue : "[]");
+    return Array.from({ length: fileCount }, (_, index) => parsed[index] === true);
+  } catch {
+    return Array.from({ length: fileCount }, () => false);
+  }
+}
+
+function protectionSpecForSplitHalf(protection, side) {
+  const spec = normalizeProtectionSpec(protection);
+  const start = side === "right" ? 0.5 : 0;
+  const end = side === "right" ? 1 : 0.5;
+  const regions = spec.regions.map((region) => {
+    const left = Math.max(start, Number(region.x) || 0);
+    const right = Math.min(end, (Number(region.x) || 0) + (Number(region.width) || 0));
+    if (right <= left) return null;
+    return { x: (left - start) * 2, y: region.y, width: (right - left) * 2, height: region.height };
+  }).filter(Boolean);
+  const strokes = spec.strokes.map((stroke) => {
+    const points = (stroke.points || [])
+      .filter((point) => point.x >= start && point.x <= end)
+      .map((point) => ({ x: (point.x - start) * 2, y: point.y }));
+    return points.length ? { radius: Math.min(0.08, stroke.radius * 2), points } : null;
+  }).filter(Boolean);
+  return { regions, strokes, invert: false };
+}
+
+async function expandSplitPageUploads(uploadedFiles, protectionMasks, splitFlags) {
+  const expanded = [];
+  for (let index = 0; index < uploadedFiles.length; index++) {
+    const file = uploadedFiles[index];
+    if (!splitFlags[index]) {
+      expanded.push({ file, protectionRegions: protectionMasks[index], split: null });
+      continue;
+    }
+    const meta = await sharp(file.buffer).metadata();
+    if (!meta.width || !meta.height || meta.width < 32) {
+      expanded.push({ file, protectionRegions: protectionMasks[index], split: null });
+      continue;
+    }
+    const leftWidth = Math.floor(meta.width / 2);
+    const rightWidth = meta.width - leftWidth;
+    const extension = extname(file.originalname || "") || ".png";
+    const stem = basename(file.originalname || `image-${index + 1}`, extension);
+    const groupId = `split-${index + 1}-${Date.now()}`;
+    const common = { groupId, originalName: file.originalname, sourceWidth: meta.width, sourceHeight: meta.height };
+    const [leftBuffer, rightBuffer] = await Promise.all([
+      sharp(file.buffer).extract({ left: 0, top: 0, width: leftWidth, height: meta.height }).toBuffer(),
+      sharp(file.buffer).extract({ left: leftWidth, top: 0, width: rightWidth, height: meta.height }).toBuffer(),
+    ]);
+    expanded.push({ file: { ...file, buffer: leftBuffer, originalname: `${stem}.__split_left${extension}` }, protectionRegions: protectionSpecForSplitHalf(protectionMasks[index], "left"), split: { ...common, side: "left", hidden: false } });
+    expanded.push({ file: { ...file, buffer: rightBuffer, originalname: `${stem}.__split_right${extension}` }, protectionRegions: protectionSpecForSplitHalf(protectionMasks[index], "right"), split: { ...common, side: "right", hidden: true } });
+  }
+  return expanded;
+}
+
 function makeBatchSnapshot(batch) {
   return {
     id: batch.id,
@@ -3938,9 +4015,10 @@ function makeBatchSnapshot(batch) {
     imageGenerationConcurrency: batch.imageGenerationConcurrency || IMAGE_GENERATION_CONCURRENCY,
     modelConcurrencyLimit: MODEL_CONCURRENCY_LIMIT,
     comicRenderContractVersion: COMIC_RENDER_CONTRACT_VERSION,
-    items: batch.items.map((item) => ({
+    items: batch.items.filter((item) => item.splitHidden !== true).map((item) => ({
       id: item.id,
-      originalName: item.originalName,
+      originalName: item.splitOriginalName || item.originalName,
+      splitPage: Boolean(item.splitGroupId),
       presetId: item.presetId,
       status: item.status,
       phaseLabel: item.phaseLabel,
@@ -4003,6 +4081,12 @@ function makeBatchSnapshot(batch) {
       retryCount: item.retryCount || 0,
       retryStartedAt: item.retryStartedAt || null,
       retryCompletedAt: item.retryCompletedAt || null,
+      splitGroupId: item.splitGroupId || null,
+      splitSide: item.splitSide || null,
+      splitHidden: item.splitHidden === true,
+      splitOriginalName: item.splitOriginalName || null,
+      splitSourceWidth: item.splitSourceWidth || null,
+      splitSourceHeight: item.splitSourceHeight || null,
     })),
   };
 }
@@ -4065,6 +4149,12 @@ function serializeBatchState(batch) {
       retryCount: item.retryCount || 0,
       retryStartedAt: item.retryStartedAt || null,
       retryCompletedAt: item.retryCompletedAt || null,
+      splitGroupId: item.splitGroupId || null,
+      splitSide: item.splitSide || null,
+      splitHidden: item.splitHidden === true,
+      splitOriginalName: item.splitOriginalName || null,
+      splitSourceWidth: item.splitSourceWidth || null,
+      splitSourceHeight: item.splitSourceHeight || null,
     })),
   };
 }
@@ -4129,6 +4219,48 @@ function updateItemPhase(batch, item, status, phaseLabel, progress) {
   item.phaseLabel = phaseLabel;
   item.progress = progress;
   batch.updatedAt = Date.now();
+}
+
+async function finalizeSplitPageOutputs(batch) {
+  const groupIds = [...new Set(batch.items.map((item) => item.splitGroupId).filter(Boolean))];
+  for (const groupId of groupIds) {
+    const parts = batch.items.filter((item) => item.splitGroupId === groupId);
+    const left = parts.find((item) => item.splitSide === "left");
+    const right = parts.find((item) => item.splitSide === "right");
+    if (!left || !right) continue;
+    if (left.status === "failed" || right.status === "failed" || !left.outputPath || !right.outputPath) {
+      left.status = "failed";
+      left.phaseLabel = "좌우 분할 처리 실패";
+      left.error = left.error || right.error || "분할된 양쪽 결과를 모두 생성하지 못했습니다.";
+      continue;
+    }
+    updateItemPhase(batch, left, "running", "좌우 결과 합성 중", 97);
+    const [leftMeta, rightMeta] = await Promise.all([sharp(left.outputPath).metadata(), sharp(right.outputPath).metadata()]);
+    const targetHeight = Math.max(leftMeta.height || 1, rightMeta.height || 1);
+    const leftWidth = Math.round((leftMeta.width || 1) * targetHeight / (leftMeta.height || 1));
+    const rightWidth = Math.round((rightMeta.width || 1) * targetHeight / (rightMeta.height || 1));
+    const [leftBuffer, rightBuffer] = await Promise.all([
+      sharp(left.outputPath).resize(leftWidth, targetHeight, { fit: "fill" }).png().toBuffer(),
+      sharp(right.outputPath).resize(rightWidth, targetHeight, { fit: "fill" }).png().toBuffer(),
+    ]);
+    const merged = await sharp({ create: { width: leftWidth + rightWidth, height: targetHeight, channels: 3, background: "#ffffff" } })
+      .composite([{ input: leftBuffer, left: 0, top: 0 }, { input: rightBuffer, left: leftWidth, top: 0 }]).png().toBuffer();
+    const outputName = resolveFinalOutputName(left.splitOriginalName || left.originalName);
+    const outputExt = extname(outputName).toLowerCase();
+    let outputPipeline = sharp(merged).toColourspace("srgb").flatten({ background: "#ffffff" });
+    outputPipeline = outputExt === ".png" ? outputPipeline.png() : outputPipeline.jpeg(OUTPUT_JPEG_OPTIONS);
+    const rendered = await outputPipeline.toBuffer();
+    const tmpPath = join(OUTPUT_DIR, outputName);
+    const downloadPath = join(DOWNLOADS_DIR, outputName);
+    await Promise.all([writeFile(tmpPath, rendered), writeFile(downloadPath, rendered)]);
+    left.outputPath = downloadPath;
+    left.previewUrl = `/output/${encodeURIComponent(outputName)}`;
+    left.manualEditBasePath = downloadPath;
+    left.targetSize = { width: leftWidth + rightWidth, height: targetHeight, finalWidth: leftWidth + rightWidth, finalHeight: targetHeight, size: `${leftWidth + rightWidth}x${targetHeight}`, resolutionTier: "split-merged" };
+    left.error = null;
+    updateItemPhase(batch, left, "completed", "좌우 분할 번역·합성 완료", 100);
+    console.log(`[split-page] merged group=${groupId} left=${leftWidth}x${targetHeight} right=${rightWidth}x${targetHeight} output=${downloadPath}`);
+  }
 }
 
 async function processBatch(batch) {
@@ -4368,6 +4500,8 @@ async function processBatch(batch) {
 
   finishGenerationQueue();
   await Promise.all(generationWorkers);
+
+  await finalizeSplitPageOutputs(batch);
 
   batch.completedAt = Date.now();
   batch.status = batch.items.some((item) => item.status === "failed") ? "completed_with_errors" : "completed";
@@ -5160,6 +5294,8 @@ app.post("/api/translate-batch", upload.any(), async (req, res) => {
     ? req.body.generationMode
     : "painted_mask";
   const protectionMasks = parseProtectionMasks(req.body?.protectionMasks, uploadedFiles.length);
+  const splitPageFlags = parseSplitPageFlags(req.body?.splitPageFlags, uploadedFiles.length);
+  const workEntries = await expandSplitPageUploads(uploadedFiles, protectionMasks, splitPageFlags);
 
   const batch = {
     id: `batch-${Date.now()}`,
@@ -5167,14 +5303,14 @@ app.post("/api/translate-batch", upload.any(), async (req, res) => {
     createdAt: Date.now(),
     updatedAt: Date.now(),
     completedAt: null,
-    items: uploadedFiles.map((file, index) => ({
+    items: workEntries.map((entry, index) => ({
       id: `item-${index + 1}`,
-      originalName: file.originalname || `image-${index + 1}.png`,
+      originalName: entry.file.originalname || `image-${index + 1}.png`,
       presetId: requestedPresetId,
       status: "queued",
       phaseLabel: "대기 중",
       progress: 0,
-      buffer: file.buffer,
+      buffer: entry.file.buffer,
       outputPath: null,
       previewUrl: null,
       manualOutputPath: null,
@@ -5193,7 +5329,13 @@ app.post("/api/translate-batch", upload.any(), async (req, res) => {
       error: null,
       targetSize: null,
       translation: null,
-      protectionRegions: protectionMasks[index] || { regions: [], invert: false },
+      protectionRegions: entry.protectionRegions || { regions: [], invert: false },
+      splitGroupId: entry.split?.groupId || null,
+      splitSide: entry.split?.side || null,
+      splitHidden: entry.split?.hidden === true,
+      splitOriginalName: entry.split?.originalName || null,
+      splitSourceWidth: entry.split?.sourceWidth || null,
+      splitSourceHeight: entry.split?.sourceHeight || null,
       protectionEditedAt: null,
       protectionChangedSinceTranslation: false,
       translationEditedAt: null,
