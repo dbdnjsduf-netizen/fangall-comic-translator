@@ -197,9 +197,15 @@ const KOREAN_SPEECH_LEVEL_GUIDE =
   "After drafting, silently check whether the ending sounds like a natural Korean line for that speaker in that scene; if the honorific level feels generic or mismatched, rewrite it.";
 const COMIC_OCR_ALIGNMENT_GUIDE =
   "One-to-one text alignment contract: First make a silent inventory of every distinct visible source-text occurrence. Return exactly one JSON item for each occurrence and never merge neighboring balloons, captions, signs, labels, or sound effects merely because they form one conversation or share a speaker. Keep connected or overlapping balloons separate unless the source glyphs are visibly one continuous text block inside one container. source_text must be the exact text visible at that occurrence, including meaningful punctuation; do not paraphrase it, translate it, or borrow words from a nearby balloon. page_zone is only a coarse 3-by-3 matching hint for that occurrence, not a glyph-tracing task, deletion boundary, typesetting box, speaker marker, whole panel, or artwork selection. Reading order controls array order and dialogue context only; it never changes which translation belongs to which physical occurrence. Repeated identical strings are separate items with separate ordered entries. Before returning JSON, silently verify that every source occurrence has one source_text and one translated_text and that no translation has been assigned to a neighboring container.";
+const COMIC_CRITICAL_SEMANTIC_FIDELITY_GUIDE =
+  "CRITICAL SOURCE-TO-TRANSLATION FIDELITY GATE: Before translating, silently re-read every meaning-critical source token directly from the image. Audit all numerals, quantities, counters, dates, ages, prices, measurements, negation or polarity markers, names, and terminology character by character. Preserve their exact meaning in translated_text; fluency, contextual plausibility, and concise fit must never change a count, number, negation, name, or factual relationship. After drafting Korean, silently compare those critical tokens against source_text again. If any critical source glyph remains visually ambiguous, use medium or low source_confidence and needs_review=true instead of guessing or reporting high confidence.";
+const JAPANESE_MANGA_FORENSIC_GLYPH_GUIDE =
+  "JAPANESE FORENSIC GLYPH CHECK: Give special scrutiny to visually similar kana, kanji, numerals, counter expressions, and any character whose identity changes with a small stroke difference. Determine character identity from the complete visible glyph structure, including stroke count, direction, spacing, and attachment. Count only strokes that visibly belong to the glyph. Never absorb a speech-balloon border, panel line, speed line, underline, adjacent punctuation, ruby text, or artwork into a character. Visual glyph evidence overrides a merely plausible contextual reading, while surrounding syntax may be used only to resolve genuinely compatible visual candidates. Preserve every verified number, quantity, and counter meaning exactly in Korean. Do not normalize, substitute, or infer a more likely character when the visible glyph supports another reading.";
+const COMIC_ADVERSARIAL_VERIFICATION_GUIDE =
+  "ADVERSARIAL FORENSIC VERIFICATION — HIGHEST PRIORITY: Treat the primary manifest as an untrusted draft that may contain deliberate single-glyph OCR and meaning errors, even when its confidence is high and its wording is plausible. Re-read every source occurrence from the image character by character before consulting or accepting the primary wording. Never approve a primary transcription merely because it produces a natural translation. When visual evidence conflicts with the primary manifest, correct source_text and translated_text. Perform the critical-token audit independently, then perform a final source-to-Korean semantic checksum for every number, count, counter, negation, name, and terminology item. Any unresolved one-stroke distinction must be marked medium or low source_confidence with needs_review=true.";
 const JAPANESE_MANGA_LATIN_PRESERVATION_GUIDE =
   "Japanese manga Latin-text lock: Treat every visible Latin-script span (A-Z, a-z, accented Latin letters, and its attached digits/punctuation) as immutable source artwork. Preserve its exact spelling, capitalization, spacing, punctuation, and visible placement. Never translate it into Korean, transliterate it into Hangul, add a Korean gloss, expand an abbreviation, normalize its case, or invent romanization. If an occurrence contains only Latin-script language plus numbers/punctuation, translated_text must be exactly identical to source_text. If Latin and Japanese share one occurrence, copy every Latin span verbatim into translated_text and translate only the Japanese span. Examples: AXETORY -> AXETORY; Axe（斧） -> Axe（도끼）; AxeSSory（装飾品） -> AxeSSory（장식품）. This lock overrides general instructions to translate every visible text.";
-const COMIC_RENDER_CONTRACT_VERSION = "coarse-anchor-v6-sol-double-check-latin-tail-presence-lock";
+const COMIC_RENDER_CONTRACT_VERSION = "coarse-anchor-v8-sol-generalized-forensic-glyph-check-latin-tail-presence-lock";
 const COMIC_PAGE_ZONES = Object.freeze([
   "top-left", "top-center", "top-right",
   "middle-left", "middle-center", "middle-right",
@@ -2647,6 +2653,8 @@ async function runComicPrimaryOcrTranslationPass(imageDataUrl, preset, dictionar
     developerText: [
       "You are the first mandatory Sol pass in a two-pass full-page comic OCR and Korean localization pipeline.",
       "Do layout analysis, exhaustive occurrence inventory, exact OCR, reading-order reconstruction, and Korean translation together from the single full-page image. There is no upstream locator list. Your reading_order must be your own complete inventory.",
+      COMIC_CRITICAL_SEMANTIC_FIDELITY_GUIDE,
+      preset.id === "manga_jp" ? JAPANESE_MANGA_FORENSIC_GLYPH_GUIDE : "",
       "Before returning, perform a second silent coverage sweep across every panel and every 3-by-3 page zone. Check speech, thoughts, captions, signs, labels, narration, sound effects, background writing, tiny notes, and repeated identical strings. Never merge neighboring containers or omit an occurrence because it seems unimportant.",
       "Use page_zone only as a coarse matching hint. Do not calculate numeric coordinates, trace glyph boundaries, request crops, or create a crop atlas.",
       "Set audit.visible_occurrence_count to exactly reading_order.length. For this first pass, corrections_made must be false. Report uncertainty honestly; the second Sol pass will independently re-scan the page.",
@@ -2695,6 +2703,9 @@ async function runComicVerificationPass(imageDataUrl, primaryResult, preset, dic
     reasoningEffort: AUTOMATIC_MODEL_PIPELINE.comicVerification.reasoningEffort,
     developerText: [
       "You are the second mandatory Sol pass and final OCR authority in a two-pass full-page comic localization pipeline.",
+      COMIC_ADVERSARIAL_VERIFICATION_GUIDE,
+      COMIC_CRITICAL_SEMANTIC_FIDELITY_GUIDE,
+      preset.id === "manga_jp" ? JAPANESE_MANGA_FORENSIC_GLYPH_GUIDE : "",
       "First re-scan the entire image independently and build your own exhaustive occurrence inventory. Do not treat the primary list, its item count, its order, or its wording as a boundary. Only after the independent scan, compare it against the primary list.",
       "You must add text occurrences missed by the primary pass, remove hallucinated occurrences, split wrongly merged containers, merge only glyphs that truly belong to one physical text block, correct source glyphs, correct translations, and repair reading order or role assignments when visual evidence requires it.",
       "Return one complete corrected reading_order for the whole page. Its array order and item count are authoritative for image generation. Never return a patch list or only the changed items.",
@@ -2720,7 +2731,8 @@ async function runComicVerificationPass(imageDataUrl, primaryResult, preset, dic
           "B. Independently transcribe and translate that inventory.",
           "C. Compare your independent result with the primary manifest below.",
           "D. Return the corrected complete full-page result, freely changing the count and order where needed.",
-          "Do not preserve a primary error for ID stability. Primary IDs are comparison labels only and must not appear in the final output.",
+          "The primary manifest is untrusted evidence, not an answer key. It may contain a deliberate one-stroke character error. Do not preserve a primary error for confidence, contextual plausibility, fluent Korean, or ID stability. Primary IDs are comparison labels only and must not appear in the final output.",
+          "Before returning, explicitly complete a silent critical-token checksum covering every number, quantity, counter, negation, name, and terminology item in source_text and translated_text.",
           `PRIMARY_AUDIT=${quotePromptData(JSON.stringify(primaryResult?.audit || {}))}`,
           "",
           primaryManifest || "(The primary pass returned no items; independently recover the full page.)",
@@ -2767,9 +2779,7 @@ function comicItemChangedByVerification(primaryItem, verifiedItem) {
 
 async function runComicAutomaticPipeline(imageDataUrl, preset, dictionaryLines, onStage = () => {}) {
   const diagnostics = {
-    contract: preset.id === "manga_jp"
-      ? "sol-primary-sol-verification-coarse-anchor-v5-latin-lock"
-      : "sol-primary-sol-verification-coarse-anchor-v5",
+    contract: COMIC_RENDER_CONTRACT_VERSION,
     pipeline: automaticPipelineSnapshot(),
     solPassCount: 2,
     primaryItemCount: 0,
