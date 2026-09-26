@@ -299,17 +299,6 @@ button:disabled {
   color: #19482d;
 }
 
-.update-log {
-  margin-top: 18px;
-  padding: 16px 18px;
-  border: 2px solid #ccbfa7;
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.82);
-}
-
-.update-log h2 { margin: 0 0 8px; }
-.update-log ul { margin: 0; padding-left: 20px; line-height: 1.7; }
-
 .batch-progress {
   height: 10px;
   background: #ece3d4;
@@ -908,3 +897,17 @@ button:disabled {
     flex-direction: column;
   }
 }
+
+.image-request-settings { margin: 16px 0; display: grid; gap: 8px; }
+.image-model-toggle { display: flex; flex-wrap: wrap; gap: 12px; border: 0; padding: 0; margin: 0 0 8px; }
+.image-model-toggle legend { margin-bottom: 8px; font-weight: 600; }
+.image-model-toggle label { padding: 8px 18px; border: 1px solid #8292a6; border-radius: 10px; cursor: pointer; }
+.image-model-toggle label:has(input:checked) { background: #244f85; color: white; border-color: #579aef; }
+.image-model-toggle input { width: auto; accent-color: #579aef; }
+#customPromptInput { width: 100%; box-sizing: border-box; resize: vertical; min-height: 84px; }
+
+.analysis-toggle { display: flex; align-items: center; gap: 10px; font-weight: 600; cursor: pointer; }
+.analysis-toggle input { width: 38px; height: 22px; accent-color: #579aef; }
+
+.batch-item.status-cancelled { opacity: .7; }
+.status-cancelled .status-badge { color: var(--muted); }
