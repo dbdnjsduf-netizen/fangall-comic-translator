@@ -9,31 +9,35 @@
   <body>
     <main class="shell">
       <section class="hero">
-        <p class="eyebrow">Sol Primary -> Sol Verification -> Image</p>
+        <p class="eyebrow">Sol Analysis → Korean Lettering</p>
         <h1>만화 이미지 자동 번역기</h1>
         <p class="lede">
-          모든 만화 페이지를 Sol이 1차로 전체 판독·번역하고, 별도의 Sol 호출이 원본 전체를 독립적으로 다시 훑어 누락·병합·순서·번역 오류를 교정한 뒤 한국어 번역본을 생성합니다.
+          Sol 낮음으로 한 번 분석하고, 불확실한 경우에만 Sol 높음으로 추가 검증합니다. 한국어 글자는 원본의 서체 느낌을 살리면서 선명하게 출력합니다.
         </p>
-      </section>
-
-      <section class="update-log" aria-labelledby="updateLogTitle">
-        <h2 id="updateLogTitle">업데이트 로그 · 2026-08-03</h2>
-        <ul>
-          <li>GitHub 배포본을 현재 로컬 개선판의 서버·UI·실행기·의존성 기준으로 전면 동기화했습니다.</li>
-          <li>OAuth 실행 안정화와 서버 과부하·스트림 실패 감지, 모델 재시도 정책을 강화했습니다.</li>
-          <li>양면 페이지가 원본 2K 범위를 초과할 때 자동으로 4K급 해상도로 생성합니다.</li>
-          <li>번역 목록에서 좌우 분할을 선택하면 양쪽을 독립 분석·번역·생성한 뒤 자동 합성합니다.</li>
-        </ul>
       </section>
 
       <section class="panel">
         <div class="automatic-pipeline" aria-label="자동 모델 처리 방식">
           <strong>자동 모델 처리</strong>
-          <span>1. Sol 높음 · 전체 페이지 읽기 순서 + OCR + 한국어 번역</span>
-          <span>2. Sol 높음 · 원본 전체 독립 재스캔 + 누락/병합/순서/번역 교정</span>
-          <span>3. Terra 중간 · 이미지 편집 요청</span>
-          <span>병렬 처리 · 페이지 분석 2개 + 이미지 생성 2개 · 전체 호출 최대 4개</span>
-          <small>모든 만화 페이지가 동일하게 Sol 이중검증을 거칩니다. 2차 Sol은 1차 목록에 묶이지 않아 누락된 글자를 새 항목으로 복구할 수 있습니다. 전체 처리는 최대 3단계이며 크롭 아틀라스나 말풍선별 추가 호출은 사용하지 않습니다.</small>
+          <span>Sol 낮음 · OCR·번역 1회 → 불확실할 때만 Sol 높음 1회 → 이미지 생성</span>
+          <small>만화·일본만화·문서에 적용됩니다. 카드게임은 이미지 직접 번역을 유지합니다. 분석이 끝나도 불확실한 항목은 결과에 표시합니다.</small>
+        </div>
+        <div class="image-request-settings">
+          <label for="analysisModeInput">OCR·번역 분석 방식</label>
+          <select id="analysisModeInput">
+            <option value="sol_adaptive" selected>Sol 낮음 → 필요 시 높음 (권장)</option>
+            <option value="sol_double">Sol 높음 → 항상 높음 재검증 (기존)</option>
+          </select>
+          <p class="dictionary-help">추가 검증은 모델의 불확실성 또는 코드 검사 문제를 기준으로 한 번만 실행합니다. 이전 Terra 선택은 Sol 권장 방식으로 전환됩니다. 저장된 번역이 있는 재생성은 분석을 반복하지 않습니다. 기존 Sol 높음 방식의 문서는 1회만 분석합니다.</p>
+          <p id="serverUpdateNotice" class="batch-notice warning" hidden>새 옵션을 사용하려면 서버 재시작이 필요합니다. 진행 중인 번역이 끝난 뒤 번역기를 다시 실행하고 이 화면을 새로고침해 주세요.</p>
+          <fieldset class="image-model-toggle">
+            <legend>GPT 이미지 모델</legend>
+            <label><input type="radio" name="imageBackend" value="gpt-image-2"> 2.0</label>
+            <label><input type="radio" name="imageBackend" value="gpt-image-2.5-sunburst" checked> 2.5</label>
+          </fieldset>
+          <label for="customPromptInput">추가 요청 <span class="dictionary-help">· 이미지 편집 단계</span></label>
+          <textarea id="customPromptInput" rows="3" maxlength="4000" placeholder="예: 대사는 검은색으로, 효과음은 원래 색상을 유지해 주세요. 작은 글씨도 읽기 쉽게 배치해 주세요."></textarea>
+          <p class="dictionary-help">사용자사전과 별도로 이미지 생성에 전달합니다. 최대 4,000자. 모델과 요청은 브라우저에 저장되며, 새 실행과 재생성에 현재 설정을 적용합니다. 저장된 OCR·번역문은 다시 분석하지 않습니다.</p>
         </div>
         <div class="preset-row">
           <label for="generationModeSelect">이미지 합성 방식</label>
@@ -60,7 +64,7 @@
             <button id="dictionaryResetBtn" type="button" class="ghost small">예시 복원</button>
           </div>
           <textarea id="dictionaryInput" rows="7" placeholder="예: Tico=티코&#10;Spider Jerusalem=스파이더 예루살렘&#10;Autumn Rainfall=아우텀 레인폴"></textarea>
-          <p class="dictionary-help">한 줄에 `원문=번역문` 형식으로 입력하세요. 저장은 브라우저에 유지됩니다.</p>
+          <p class="dictionary-help">한 줄에 `원문=번역문` 형식으로 입력하세요. 저장은 브라우저에 유지됩니다. 문서/PDF 번역과 카드게임 번역에는 아컴호러 고정 용어 60개가 자동 적용되며 사용자사전보다 우선합니다.</p>
         </div>
         <div id="dropzone" class="dropzone" tabindex="0">
           <input id="fileInput" type="file" accept="image/*" multiple hidden />
@@ -80,6 +84,7 @@
           <button id="loginBtn" class="ghost">Codex 로그인 안내</button>
           <button id="cleanupBtn" class="ghost">찌꺼기 삭제</button>
           <button id="historyClearBtn" class="ghost danger">번역 기록 지우기</button>
+          <button id="cancelPendingBtn" type="button" class="ghost danger" title="모든 배치에서 아직 시작하지 않은 항목만 중단합니다. 분석·생성이 시작된 항목은 계속 처리합니다.">대기 작업 전부 중단</button>
           <button id="runBtn" class="primary" disabled>선택한 파일 일괄 실행</button>
         </div>
 
@@ -94,6 +99,8 @@
 
         <article class="card">
           <h2>현재 번역 상태</h2>
+          <button id="downloadBatchTranslationBtn" type="button" class="ghost small" disabled>현재 작업 전체 번역문 TXT 저장</button>
+          <p class="dictionary-help">원문·좌표·분석 정보 없이 저장된 번역문만 읽기 순서대로 내보냅니다. 전체 저장은 이미지 순서대로 합치며, 번역문이 없는 항목은 제외합니다.</p>
           <div id="meta" class="meta"></div>
           <div id="batchList" class="batch-list"></div>
           <pre id="jsonView" class="json"></pre>

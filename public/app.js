@@ -1,8 +1,35 @@
+const analysisModeInput = document.getElementById("analysisModeInput");
+let serverSupportsAdaptive = false;
+const customPromptInput = document.getElementById("customPromptInput");
+const imageBackendInputs = [...document.querySelectorAll('input[name="imageBackend"]')];
+function currentGenerationSettings(forRequest = false) {
+  if (forRequest && analysisModeInput.value === "sol_adaptive" && !serverSupportsAdaptive) {
+    throw new Error("새 분석 옵션은 서버 재시작 후 사용할 수 있습니다. 진행 중인 번역이 끝난 뒤 번역기를 다시 실행하고 새로고침해 주세요.");
+  }
+  return { analysisMode: analysisModeInput.value, solAnalysis: true, imageBackend: imageBackendInputs.find(input => input.checked)?.value || "gpt-image-2.5-sunburst", customPrompt: customPromptInput.value.trim() };
+}
+try {
+  const saved = JSON.parse(localStorage.getItem("comic-translator.image-request") || "{}");
+  analysisModeInput.value = ["sol_adaptive", "sol_double"].includes(saved.analysisMode)
+    ? saved.analysisMode
+    : saved.analysisMode === undefined && saved.solAnalysis === true ? "sol_double" : "sol_adaptive";
+  for (const input of imageBackendInputs) if (input.value === saved.imageBackend) input.checked = true;
+  customPromptInput.value = typeof saved.customPrompt === "string" ? saved.customPrompt.slice(0, 4000) : "";
+} catch {}
+function saveGenerationSettings() {
+  try { localStorage.setItem("comic-translator.image-request", JSON.stringify(currentGenerationSettings())); } catch {}
+}
+imageBackendInputs.forEach(input => input.addEventListener("change", saveGenerationSettings));
+customPromptInput.addEventListener("input", saveGenerationSettings);
+analysisModeInput.addEventListener("change", saveGenerationSettings);
+
 const dropzone = document.getElementById("dropzone");
 const fileInput = document.getElementById("fileInput");
 const runBtn = document.getElementById("runBtn");
 const loginBtn = document.getElementById("loginBtn");
 const cleanupBtn = document.getElementById("cleanupBtn");
+const cancelPendingBtn = document.getElementById("cancelPendingBtn");
+const TERMINAL_BATCH_STATUSES = new Set(["completed", "completed_with_errors", "completed_with_cancellations", "cancelled", "failed"]);
 const historyClearBtn = document.getElementById("historyClearBtn");
 const statusBox = document.getElementById("status");
 const meta = document.getElementById("meta");
@@ -236,7 +263,7 @@ function renderSelectedFiles() {
   meta.innerHTML =
     `<strong>선택 파일 수:</strong> ${selectedFiles.length}장<br />` +
     `<strong>자동 분석:</strong> Sol 높음 1차 → Sol 높음 2차 전체 재검증<br />` +
-    `<strong>이미지 출력:</strong> Terra 중간<br />` +
+    `<strong>이미지 출력:</strong> Sol 중간<br />` +
     `<strong>이미지 합성 방식:</strong> ${generationModeSelect.options[generationModeSelect.selectedIndex]?.text || "-"}<br />` +
     `<strong>선택 프롬프트:</strong> ${presetSelect.options[presetSelect.selectedIndex]?.text || "-"}<br />` +
     `<strong>페이지 분석 동시 처리 수:</strong> 2개<br />` +
@@ -307,32 +334,66 @@ function parseDictionary(text) {
     .filter(Boolean);
 }
 
+function translationTextOnly(translation) {
+  const entries = Array.isArray(translation?.reading_order)
+    ? translation.reading_order.map(entry => entry?.translated_text)
+    : Array.isArray(translation?.blocks)
+      ? translation.blocks.map(entry => entry?.text || entry?.translated_markup || entry?.translated_text)
+      : [];
+  return entries.filter(text => typeof text === "string" && text.trim())
+    .map(text => text.trim()).join("\n\n");
+}
+
+function downloadTranslationText(items, filename) {
+  const text = items.map(item => translationTextOnly(item.translation)).filter(Boolean).join("\n\n\n");
+  if (!text) return setStatus("아직 저장된 번역문이 없습니다.");
+  const blob = new Blob(["\uFEFF", text.replace(/\r?\n/g, "\r\n"), "\r\n"], { type: "text/plain;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename.replace(/[<>:"/\\|?*\x00-\x1F]/g, "_");
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+  setStatus("번역문만 담은 TXT 다운로드를 시작했습니다.");
+}
+
+document.getElementById("downloadBatchTranslationBtn").addEventListener("click", () => {
+  if (latestBatch) downloadTranslationText(latestBatch.items, `${latestBatch.id}-번역문.txt`);
+});
+
 function renderBatch(batch) {
   latestBatch = batch;
-  const automaticPipelineLabel = batch.modelPipeline
-    ? batch.modelPipeline.comicPrimaryOcr
-      ? `${batch.modelPipeline.comicPrimaryOcr.model} 1차 → ${batch.modelPipeline.comicVerification?.model || "gpt-5.6-sol"} 2차 전체 재검증 → ${batch.modelPipeline.imageGeneration?.model || "gpt-5.6-terra"} 이미지 생성`
-      : `${batch.modelPipeline.layout?.model || "Luna"} → ${batch.modelPipeline.ocr?.model || "Terra"} 또는 ${batch.modelPipeline.exceptionReview?.model || "Sol"}(이전 방식)`
-    : null;
+  document.getElementById("downloadBatchTranslationBtn").disabled = !batch.items.some(item => translationTextOnly(item.translation));
   const batchId = escapeHtml(batch.id);
   const statusLabels = {
     queued: "대기",
     running: "처리 중",
     completed: "완료",
     failed: "실패",
+    cancelled: "중단",
   };
   batchList.innerHTML = batch.items.map((item, index) => {
     const itemId = escapeHtml(item.id);
-    const status = ["queued", "running", "completed", "failed"].includes(item.status)
+    const status = ["queued", "running", "completed", "failed", "cancelled"].includes(item.status)
       ? item.status
       : "queued";
     const progress = Math.max(0, Math.min(100, Number(item.progress || 0)));
     const automation = item.translation?.automation;
-    const solVerificationSummary = automation?.solPassCount === 2
-      ? `Sol 이중검증: 1차 ${automation.primaryItemCount ?? 0}개 → 최종 ${automation.verifiedItemCount ?? 0}개 · 수정 ${automation.correctedItemCount ?? 0}개`
-      : Number.isFinite(automation?.solEscalatedItemCount)
-        ? `이전 Sol 복잡 페이지 경로: ${automation.solEscalatedItemCount}개 항목`
-        : "";
+    const analysisLabel = automation?.primaryModel
+      ? [automation.primaryModel + "/" + automation.primaryReasoningEffort,
+          automation.verificationModel ? automation.verificationModel + "/" + automation.verificationReasoningEffort + " 추가 검증" : "1회 분석"].join(" → ")
+      : automation?.solPassCount === 2 ? "Sol 높음 1차 → Sol 높음 2차 (이전 기록)"
+      : automation?.model ? automation.model + "/" + automation.reasoningEffort
+      : automation?.solPassCount === 1 ? "Sol 높음 1회 (이전 기록)" : "이미지 직접 번역";
+    const reviewCount = automation?.unresolvedItemCount || 0;
+    const reviewNeeded = automation?.pageNeedsReview || reviewCount > 0;
+    const analysisSeconds = Number.isFinite(automation?.primaryDurationMs)
+      ? Math.round((automation.primaryDurationMs + (automation.verificationDurationMs || 0)) / 1000) : null;
+    const solVerificationSummary = automation?.verificationModel || automation?.solPassCount === 2
+      ? "추가 검증: " + (automation.primaryItemCount ?? 0) + "개 → " + (automation.verifiedItemCount ?? 0) + "개 · 변경 " + (automation.correctedItemCount ?? 0) + "개"
+      : "";
     const resolutionText = item.targetSize
       ? item.targetSize.finalWidth && item.targetSize.finalHeight
         && (item.targetSize.finalWidth !== item.targetSize.width || item.targetSize.finalHeight !== item.targetSize.height)
@@ -340,7 +401,9 @@ function renderBatch(batch) {
         : `출력 ${item.targetSize.width}×${item.targetSize.height}`
       : "";
     const details = [
-      automaticPipelineLabel ? `자동 분석: ${automaticPipelineLabel}` : "",
+      `자동 분석: ${analysisLabel}`,
+      analysisSeconds === null ? "" : `분석 소요: ${analysisSeconds}초 (대기·재시도 포함)`,
+      automation?.fallbackTriggered ? `추가 검증 이유: ${(automation.escalationReasons || []).join("; ")}` : "",
       batch.analysisConcurrency
         ? `병렬 처리: 분석 ${batch.analysisConcurrency}개 · 생성 ${batch.imageGenerationConcurrency || 2}개 · 전체 최대 ${batch.modelConcurrencyLimit || 4}개`
         : "",
@@ -366,6 +429,7 @@ function renderBatch(batch) {
       ? `<a class="batch-preview" href="${escapeHtml(previewUrl)}" target="_blank" rel="noopener"><img src="${escapeHtml(previewUrl)}" alt="${escapeHtml(item.originalName)} 번역 결과 미리보기" /><span>결과 크게 보기</span></a>`
       : "";
     const notices = [
+      reviewNeeded ? `<div class="batch-notice warning"><strong>검토 필요${reviewCount ? ` · ${reviewCount}개 항목` : ""}</strong><span>${escapeHtml(automation.pageReviewReason || "분석 후에도 판독·번역이 불확실한 항목이 남았습니다. 번역수정에서 이유를 확인하세요.")}</span></div>` : "",
       item.translationPendingRegeneration
         ? `<div class="batch-notice warning">번역 수정사항이 저장되어 있습니다. 이미지 재생성이 필요합니다.</div>`
         : "",
@@ -374,6 +438,10 @@ function renderBatch(batch) {
         : "",
     ].join("");
     const tools = [];
+    const plainTranslation = translationTextOnly(item.translation);
+    if (plainTranslation) {
+      tools.push(`<button type="button" class="ghost small translation-txt-btn" data-batch-id="${batchId}" data-item-id="${itemId}">번역문 TXT 저장</button>`);
+    }
     if (status === "completed" && item.previewUrl && item.manualEditReady) {
       tools.push(`<button type="button" class="ghost small manual-restore-btn" data-batch-id="${batchId}" data-item-id="${itemId}">생성본 복구 편집</button>`);
     }
@@ -402,6 +470,7 @@ function renderBatch(batch) {
         <div class="batch-phase"><span>${escapeHtml(item.phaseLabel || statusLabels[status])}</span><strong>${progress}%</strong></div>
         <div class="batch-progress" aria-label="진행률 ${progress}%"><span style="width:${progress}%"></span></div>
         ${notices}
+        ${plainTranslation ? `<details class="batch-details"><summary>번역문만 보기</summary><div style="white-space:pre-wrap;overflow-wrap:anywhere;user-select:text">${escapeHtml(plainTranslation)}</div></details>` : ""}
         <div class="batch-content">${previewHtml}<div class="batch-content-main">${detailHtml}${outputHtml}${toolsHtml}</div></div>
       </article>
     `;
@@ -410,11 +479,12 @@ function renderBatch(batch) {
   const current = batch.items.find((item) => item.status === "running");
   const completed = batch.items.filter((item) => item.status === "completed").length;
   const failed = batch.items.filter((item) => item.status === "failed").length;
+  const cancelled = batch.items.filter((item) => item.status === "cancelled").length;
 
   if (current) {
     setStatus(`현재 ${current.originalName}: ${current.phaseLabel}`);
-  } else if (batch.status === "completed" || batch.status === "completed_with_errors" || batch.status === "failed") {
-    setStatus(`배치 완료. 성공 ${completed}장, 실패 ${failed}장`);
+  } else if (TERMINAL_BATCH_STATUSES.has(batch.status)) {
+    setStatus(`배치 완료. 성공 ${completed}장, 실패 ${failed}장${cancelled ? `, 중단 ${cancelled}장` : ""}`);
   } else {
     setStatus("배치 준비 중");
   }
@@ -428,6 +498,8 @@ async function refreshHealth() {
     const response = await fetch("/api/health");
     const data = await readJsonResponse(response, "서버 상태를 확인하지 못했습니다.");
     oauthUrl = data.oauthUrl || oauthUrl;
+    serverSupportsAdaptive = data.analysisModes?.includes("sol_adaptive") === true;
+    document.getElementById("serverUpdateNotice").hidden = serverSupportsAdaptive;
     if (data.oauthReady) {
       setStatus(`준비 완료. 파일을 올리고 실행 버튼을 누르세요. 결과 저장 위치: ${data.downloadsDir}`);
     } else {
@@ -453,6 +525,7 @@ async function loadRecentBatch() {
   if (recentBatch && !selectedFiles.length) {
     activeBatchId = recentBatch.id;
     renderBatch(recentBatch);
+    if (!TERMINAL_BATCH_STATUSES.has(recentBatch.status)) await pollBatch(recentBatch.id);
   }
 }
 
@@ -480,7 +553,7 @@ async function pollBatch(batchId) {
 
   renderBatch(data.batch);
 
-  if (data.batch.status === "completed" || data.batch.status === "completed_with_errors" || data.batch.status === "failed") {
+  if (TERMINAL_BATCH_STATUSES.has(data.batch.status)) {
     runBtn.disabled = selectedFiles.length === 0;
     return;
   }
@@ -978,7 +1051,7 @@ async function runRestoreAdditionalRequest() {
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ additionalRequest }),
+        body: JSON.stringify({ additionalRequest, ...currentGenerationSettings(true) }),
       },
     );
     const data = await readJsonResponse(response, "생성본 추가요청을 반영하지 못했습니다.");
@@ -1123,16 +1196,19 @@ function renderTranslationEditor() {
   const items = translationDraftKind === "reading_order"
     ? translationDraft.reading_order
     : translationDraft.blocks;
-  translationSummary.textContent = `${items.length}개 항목 · 순서는 이미지의 읽기 순서 및 같은 문구의 위치 대응에 사용됩니다.`;
+  translationSummary.textContent = `${items.length}개 항목 · 순서는 이미지의 읽기 순서 및 같은 문구의 위치 대응에 사용됩니다.${translationDraft.automation?.pageNeedsReview ? " 페이지 검토 필요: " + (translationDraft.automation.pageReviewReason || "불확실한 항목을 확인하세요.") : ""}`;
   translationEditorList.innerHTML = items.map((item, index) => {
+    const reviewNotice = item.review_reasons?.length ? `<p class="batch-notice warning">검토 필요: ${escapeHtml(item.review_reasons.join("; "))}</p>` : "";
     if (translationDraftKind === "blocks") {
       return `<article class="translation-row" data-index="${index}">
         <div class="translation-row-head"><strong>${index + 1}번 번역 블록</strong><div class="translation-row-actions"><button type="button" class="ghost small" data-action="up" title="위로">↑</button><button type="button" class="ghost small" data-action="down" title="아래로">↓</button><button type="button" class="ghost danger small" data-action="delete">삭제</button></div></div>
+        ${reviewNotice}
         <label>번역문<textarea rows="4" data-field="text">${escapeHtml(item.text)}</textarea></label>
       </article>`;
     }
     return `<article class="translation-row" data-index="${index}">
       <div class="translation-row-head"><strong>${index + 1}번 텍스트</strong><div class="translation-row-actions"><button type="button" class="ghost small" data-action="up" title="위로">↑</button><button type="button" class="ghost small" data-action="down" title="아래로">↓</button><button type="button" class="ghost danger small" data-action="delete">삭제</button></div></div>
+      ${reviewNotice}
       <div class="translation-text-grid">
         <label>인식된 원문<textarea rows="3" data-field="source_text">${escapeHtml(item.source_text)}</textarea></label>
         <label>이미지에 넣을 번역문<textarea rows="3" data-field="translated_text">${escapeHtml(item.translated_text)}</textarea></label>
@@ -1204,7 +1280,7 @@ async function startGenerationRetry(batchId, itemId, askConfirmation = true) {
   setStatus("이미지 생성 재실행을 등록 중...");
   const response = await fetch(
     `/api/translate-batch/${encodeURIComponent(batchId)}/${encodeURIComponent(itemId)}/retry-generation`,
-    { method: "POST" },
+    { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(currentGenerationSettings(true)) },
   );
   const data = await readJsonResponse(response, "이미지 생성 재실행을 시작하지 못했습니다.");
   activeBatchId = batchId;
@@ -1255,6 +1331,22 @@ cleanupBtn.addEventListener("click", async () => {
     setStatus(`오류: ${error.message}`);
   } finally {
     cleanupBtn.disabled = false;
+  }
+});
+
+cancelPendingBtn.addEventListener("click", async () => {
+  cancelPendingBtn.disabled = true;
+  try {
+    const response = await fetch("/api/translate-batches/cancel-pending", { method: "POST" });
+    if (response.status === 404) throw new Error("버튼을 사용하려면 업데이트된 서버로 재시작해 주세요.");
+    const data = await readJsonResponse(response, "대기 작업 중단 실패");
+    const visible = data.batches?.find(batch => batch.id === activeBatchId);
+    if (visible) renderBatch(visible);
+    setStatus(data.cancelledCount ?       `대기 항목 ${data.cancelledCount}개를 중단했습니다. 이미 시작된 항목은 끝까지 처리합니다.` : "중단할 대기 항목이 없습니다. 이미 시작된 항목은 계속 처리합니다.");
+  } catch (error) {
+    setStatus(error.message);
+  } finally {
+    cancelPendingBtn.disabled = false;
   }
 });
 
@@ -1373,7 +1465,9 @@ batchList.addEventListener("click", async (event) => {
   const item = latestBatch.items.find((entry) => entry.id === button.dataset.itemId);
   if (!item) return;
   try {
-    if (button.classList.contains("manual-restore-btn")) {
+    if (button.classList.contains("translation-txt-btn")) {
+      downloadTranslationText([item], `${item.originalName.replace(/\.[^.]+$/, "")}-번역문.txt`);
+    } else if (button.classList.contains("manual-restore-btn")) {
       await openRestoreEditor(button.dataset.batchId, item);
     } else if (button.classList.contains("failed-mask-edit-btn")) {
       await openRetryMaskEditor(button.dataset.batchId, item);
@@ -1671,6 +1765,7 @@ runBtn.addEventListener("click", async () => {
     formData.append("presetId", presetSelect.value || "comic");
     formData.append("concurrency", concurrencySelect.value || "2");
     formData.append("dictionary", dictionaryInput.value || "");
+    for (const [key, value] of Object.entries(currentGenerationSettings(true))) formData.append(key, value);
     formData.append("generationMode", generationModeSelect.value || "painted_mask");
     formData.append("splitPageFlags", JSON.stringify(splitPageFlags));
     formData.append(
