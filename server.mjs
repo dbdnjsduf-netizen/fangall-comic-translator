@@ -584,9 +584,9 @@ app.use("/output", express.static(OUTPUT_DIR));
 let shuttingDown = false;
 
 function spawnOAuthProxy() {
-  const oauthCliPath = join(__dirname, "node_modules", "openai-oauth", "dist", "cli.js");
+  const oauthCliPath = join(__dirname, "scripts", "start-oauth.mjs");
   if (!existsSync(oauthCliPath)) {
-    throw new Error(`openai-oauth CLI is missing at ${oauthCliPath}. Run npm install before starting the translator.`);
+    throw new Error(`Translator OAuth launcher is missing at ${oauthCliPath}.`);
   }
   const oauthArgs = [
     oauthCliPath,
@@ -2226,7 +2226,7 @@ async function fetchOAuth(pathname, body, { accept = "application/json", signal 
   if (response.ok) return response;
   const bodyText = await response.text();
   let message = bodyText;
-  try { const parsed = JSON.parse(bodyText); message = parsed.error?.message || parsed.message || bodyText; } catch {}
+  try { const parsed = JSON.parse(bodyText); message = parsed.error?.message || parsed.detail || parsed.message || bodyText; } catch {}
   const requestId = response.headers.get("x-request-id") || response.headers.get("request-id");
   const error = new Error((message || "OAuth request failed") + (requestId ? " (request id: " + requestId + ")" : ""));
   error.status = response.status;
