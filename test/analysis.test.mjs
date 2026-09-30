@@ -16,7 +16,7 @@ async function run(draft, final = page(), mode = 'sol_adaptive', presetId = 'man
 
 test('adaptive uses exactly Sol low once on a valid clear page', async () => {
   const { result, calls } = await run(page());
-  assert.deepEqual(calls, [{ model: 'gpt-6-sol', effort: 'low' }]);
+  assert.deepEqual(calls, [{ model: 'gpt-6.1-sol', effort: 'low' }]);
   assert.equal(result.automation.analysisPassCount, 1);
   assert.equal(result.automation.fallbackTriggered, false);
 });
@@ -24,11 +24,11 @@ test('item uncertainty triggers exactly one Sol high call with draft', async () 
   const draft = page([item({ source_confidence: 'low', needs_review: true, review_reason: '二/三 판독 불확실' })]);
   const { result, calls } = await run(draft);
   assert.equal(calls.length, 2);
-  assert.equal(calls[1].model, 'gpt-6-sol');
+  assert.equal(calls[1].model, 'gpt-6.1-sol');
   assert.equal(calls[1].effort, 'high');
   assert.equal(calls[1].draft, draft);
   assert.equal(result.automation.fallbackTriggered, true);
-  assert.equal(result.automation.verificationModel, 'gpt-6-sol');
+  assert.equal(result.automation.verificationModel, 'gpt-6.1-sol');
   assert.equal(result.automation.unresolvedItemCount, 0);
 });
 test('coverage uncertainty triggers high even with confident items', async () => {
@@ -73,7 +73,7 @@ test('legacy mode mapping is preserved and new users default adaptive', () => {
 });
 test('legacy full verification always uses high twice; removed Terra mode uses adaptive Sol', async () => {
   assert.deepEqual((await run(page(), page(), 'sol_double')).calls.map(c => c.effort), ['high', 'high']);
-  assert.deepEqual((await run(page(), page(), 'terra_single')).calls, [{ model: 'gpt-6-sol', effort: 'low' }]);
+  assert.deepEqual((await run(page(), page(), 'terra_single')).calls, [{ model: 'gpt-6.1-sol', effort: 'low' }]);
 });
 test('documents get conditional high; legacy high documents remain one pass', async () => {
   const good = { blocks: [{ text: '문서 번역' }], audit: page().audit };

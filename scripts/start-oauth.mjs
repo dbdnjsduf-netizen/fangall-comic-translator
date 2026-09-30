@@ -4,7 +4,7 @@ import { createOpenAIOAuthFetchHandler, startOpenAIOAuthServer } from 'openai-oa
 import { resolveInstalledCodexVersion, withCodexClientVersion, verifyOAuthModels } from '../lib/oauth-runtime.mjs';
 
 try {
-  const { values } = parseArgs({ options: { port: { type: 'string', default: '10531' }, models: { type: 'string', default: 'gpt-6-sol' }, 'codex-version': { type: 'string', default: '' } } });
+  const { values } = parseArgs({ options: { port: { type: 'string', default: '10531' }, models: { type: 'string', default: 'gpt-6.1-sol' }, 'codex-version': { type: 'string', default: '' } } });
   const port = Number(values.port);
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Invalid OAuth port.');
   const version = await resolveInstalledCodexVersion({ override: values['codex-version'] || process.env.OAUTH_CODEX_VERSION || '' });
