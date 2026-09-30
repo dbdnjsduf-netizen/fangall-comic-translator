@@ -27,10 +27,10 @@ const DOWNLOADS_DIR = join(homedir(), "Downloads", "번역 완료");
 const PYTHON_CROP_SCRIPT = join(__dirname, "scripts", "crop_padded_image.py");
 const batches = new Map();
 const AUTOMATIC_MODEL_PIPELINE = Object.freeze({
-  comicPrimaryOcr: Object.freeze({ model: "gpt-6-sol", reasoningEffort: "high" }),
-  comicVerification: Object.freeze({ model: "gpt-6-sol", reasoningEffort: "high" }),
-  documentOcr: Object.freeze({ model: "gpt-6-sol", reasoningEffort: "high" }),
-  imageGeneration: Object.freeze({ model: "gpt-6-sol", reasoningEffort: "medium" }),
+  comicPrimaryOcr: Object.freeze({ model: "gpt-6.1-sol", reasoningEffort: "high" }),
+  comicVerification: Object.freeze({ model: "gpt-6.1-sol", reasoningEffort: "high" }),
+  documentOcr: Object.freeze({ model: "gpt-6.1-sol", reasoningEffort: "high" }),
+  imageGeneration: Object.freeze({ model: "gpt-6.1-sol", reasoningEffort: "medium" }),
 });
 const IMAGE_GENERATION_BACKEND_MODEL = String(
   process.env.IMAGE_GENERATION_BACKEND_MODEL || "gpt-image-2.5-sunburst",

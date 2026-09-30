@@ -25,7 +25,7 @@ test('actual server request uses low, audited schema, dictionary, and a full-pag
   const {c,requests}=setup();
   const result=await vm.runInContext(`runAutomaticOcrTranslation('data:image/png;base64,FAKE',getPreset('manga_jp'),['猫 => 고양이'],()=>{},'sol_adaptive')`,c);
   assert.equal(requests.length,1);
-  assert.equal(requests[0].model,'gpt-6-sol');
+  assert.equal(requests[0].model,'gpt-6.1-sol');
   assert.equal(requests[0].reasoning.effort,'low');
   assert.ok(requests[0].text.format.schema.properties.audit);
   assert.ok(requests[0].input[1].content.some(x=>x.type==='input_image' && x.detail==='high'));
@@ -36,7 +36,7 @@ test('actual escalation request uses high and permits recovering omitted text',a
   const bad=good(); bad.audit.needs_review=true; bad.audit.review_reason='누락 가능';
   const {c,requests}=setup([bad,good()]);
   await vm.runInContext(`runAutomaticOcrTranslation('FAKE',getPreset('comic'),[],()=>{},'sol_adaptive')`,c);
-  assert.deepEqual(requests.map(x=>x.model),['gpt-6-sol','gpt-6-sol']);
+  assert.deepEqual(requests.map(x=>x.model),['gpt-6.1-sol','gpt-6.1-sol']);
   assert.deepEqual(requests.map(x=>x.reasoning.effort),['low','high']);
   assert.match(JSON.stringify(requests[1].input),/not present in the draft/);
   assert.match(JSON.stringify(requests[1].input),/누락 가능/);
@@ -46,7 +46,7 @@ test('new Korean clarity applies once to every active image prompt path',async()
     const {c,requests}=setup([{image:true}]);
     c.translation={...good(),blocks:[{text:'문서'}]};
     await vm.runInContext(`runImageTranslation('FAKE',translation,'2048x2048',getPreset('${preset}'),[],'gpt-5.6-terra',null,${mode==='painted_mask'},'${mode}')`,c);
-    assert.equal(requests[0].model,'gpt-6-sol');
+    assert.equal(requests[0].model,'gpt-6.1-sol');
     assert.equal(requests[0].reasoning.effort,'medium');
     const text=requests[0].input.flatMap(x=>x.content).filter(x=>x.type==='input_text').map(x=>x.text).join('\n');
     assert.equal(text.split('KOREAN LETTERING CLARITY:').length-1,1,preset+' '+mode);
